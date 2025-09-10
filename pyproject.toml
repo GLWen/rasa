@@ -302,7 +302,7 @@ version = ">=3.8,<4.4"
 extras = [ "tls", "srv",]
 
 [tool.poetry.dev-dependencies.pytest-sanic]
-git = "https://github.com/RasaHQ/pytest-sanic"
+git = "https://gitee.com/wenguoli/pytest-sanic.git"
 branch = "fix_signal_issue"
 
 [tool.poetry.group.dev.dependencies]
