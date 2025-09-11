@@ -74,7 +74,7 @@ install-full: install-mitie
 	poetry install -E full
 
 install-docs:
-	cd docs/ && yarn install
+	cd docs/  && npm install && yarn install
 
 formatter:
 	poetry run black rasa tests

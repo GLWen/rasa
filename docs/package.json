@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "@docusaurus/core": "2.0.0-alpha.63",
+    "@docusaurus/lqip-loader": "0.0.0-4010",
     "@docusaurus/plugin-client-redirects": "2.0.0-alpha.63",
     "@docusaurus/plugin-content-docs": "2.0.0-alpha.63",
     "@docusaurus/plugin-content-pages": "2.0.0-alpha.63",
@@ -65,6 +66,7 @@
     "remark-sources": "^1.1.0",
     "sass": "^1.26.10",
     "sass-loader": "^9.0.3",
+    "sharp": "0.30.7",
     "styled-components": "^4.2.0",
     "tinycolor2": "^1.4.2",
     "unist-util-visit-children": "^1.1.3",
