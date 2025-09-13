@@ -1,43 +1,48 @@
+# 导入未来版本注解支持，允许使用字符串形式的类型注解
 from __future__ import annotations
-import logging
-import os
-from typing import Any, Dict, List, Optional, Text, Tuple, Type
 
-import tensorflow as tf
-from tensorflow.python.eager.wrap_function import WrappedFunction
-from tqdm import tqdm
-import numpy as np
+# 导入标准库模块
+import logging  # 日志记录模块，用于记录程序运行状态和调试信息
+import os  # 操作系统接口模块，用于文件路径操作
+from typing import Any, Dict, List, Optional, Text, Tuple, Type  # 类型注解模块，提供类型提示功能
 
-from rasa.engine.graph import GraphComponent, ExecutionContext
-from rasa.engine.recipes.default_recipe import DefaultV1Recipe
-from rasa.engine.storage.storage import ModelStorage
-from rasa.engine.storage.resource import Resource
-import rasa.shared.utils.io
-import rasa.core.utils
-from rasa.nlu.tokenizers.tokenizer import Token, Tokenizer
-from rasa.nlu.featurizers.dense_featurizer.dense_featurizer import DenseFeaturizer
-from rasa.shared.nlu.training_data.training_data import TrainingData
-from rasa.shared.nlu.training_data.message import Message
-from rasa.nlu.constants import (
-    DENSE_FEATURIZABLE_ATTRIBUTES,
-    TOKENS_NAMES,
-    NUMBER_OF_SUB_TOKENS,
+# 导入深度学习框架
+import tensorflow as tf  # TensorFlow 深度学习框架，用于模型推理
+from tensorflow.python.eager.wrap_function import WrappedFunction  # TensorFlow 包装函数，用于模型签名
+from tqdm import tqdm  # 进度条库，用于显示训练进度
+import numpy as np  # 数值计算库，提供多维数组和数学运算功能
+
+# 导入 Rasa 核心模块
+from rasa.engine.graph import GraphComponent, ExecutionContext  # 图组件和执行上下文，用于组件管理和执行控制
+from rasa.engine.recipes.default_recipe import DefaultV1Recipe  # 默认配方，用于组件注册和配置
+from rasa.engine.storage.storage import ModelStorage  # 模型存储，提供模型持久化功能
+from rasa.engine.storage.resource import Resource  # 资源管理，用于模型资源的存储和访问
+import rasa.shared.utils.io  # 共享工具模块，提供文件读写和序列化功能
+import rasa.core.utils  # 核心工具模块，提供核心功能
+from rasa.nlu.tokenizers.tokenizer import Token, Tokenizer  # 标记化器，用于将文本分割为标记
+from rasa.nlu.featurizers.dense_featurizer.dense_featurizer import DenseFeaturizer  # 密集特征化器基类，提供密集特征提取的通用接口
+from rasa.shared.nlu.training_data.training_data import TrainingData  # 训练数据类，包含所有训练样本
+from rasa.shared.nlu.training_data.message import Message  # 消息类，表示训练数据中的单条消息
+from rasa.nlu.constants import (  # NLU 常量导入
+    DENSE_FEATURIZABLE_ATTRIBUTES,  # 可密集特征化的属性列表
+    TOKENS_NAMES,  # 标记名称常量，定义各种标记的键名
+    NUMBER_OF_SUB_TOKENS,  # 子标记数量常量
 )
-from rasa.shared.nlu.constants import TEXT, ACTION_TEXT
-from rasa.exceptions import RasaException
-import rasa.nlu.utils
-import rasa.utils.train_utils as train_utils
+from rasa.shared.nlu.constants import TEXT, ACTION_TEXT  # NLU 常量，定义消息属性的键名
+from rasa.exceptions import RasaException  # Rasa 异常类，用于错误处理
+import rasa.nlu.utils  # NLU 工具模块，提供 NLU 相关功能
+import rasa.utils.train_utils as train_utils  # 训练工具模块，提供训练相关功能
 
+# 初始化日志记录器，用于记录组件的运行状态和调试信息
 logger = logging.getLogger(__name__)
 
-# URL to the old remote location of the model which
-# users might use. The model is no longer hosted here.
+# 原始模型远程位置的 URL，用户可能使用此 URL，但模型已不再托管在此处
 ORIGINAL_TF_HUB_MODULE_URL = (
     "https://github.com/PolyAI-LDN/polyai-models/releases/download/v1.0/model.tar.gz"
 )
 
-# Warning: This URL is only intended for running pytests on ConveRT
-# related components. This URL should not be allowed to be used by the user.
+# 警告：此 URL 仅用于运行 ConveRT 相关组件的 pytest 测试
+# 此 URL 不应被用户使用
 RESTRICTED_ACCESS_URL = (
     "https://storage.googleapis.com/continuous-"
     "integration-model-storage/convert_tf2.tar.gz"
@@ -45,42 +50,67 @@ RESTRICTED_ACCESS_URL = (
 
 
 @DefaultV1Recipe.register(
-    DefaultV1Recipe.ComponentType.MESSAGE_FEATURIZER, is_trainable=False
+    DefaultV1Recipe.ComponentType.MESSAGE_FEATURIZER, is_trainable=False  # 注册为消息特征化器组件类型，标记为不可训练组件
 )
 class ConveRTFeaturizer(DenseFeaturizer, GraphComponent):
-    """Featurizer using ConveRT model.
+    """使用 ConveRT 模型的特征化器。
 
-    Loads the ConveRT(https://github.com/PolyAI-LDN/polyai-models#convert)
-    model from TFHub and computes sentence and sequence level feature representations
-    for dense featurizable attributes of each message object.
+    该类继承自 DenseFeaturizer 和 GraphComponent，实现了基于 ConveRT 模型的密集特征提取。
+    从 TFHub 加载 ConveRT 模型（https://github.com/PolyAI-LDN/polyai-models#convert），
+    并为每个消息对象的密集可特征化属性计算句子级别和序列级别的特征表示。
+    
+    ConveRT 是一个高效的对话表示转换器，专门为对话系统设计，
+    能够生成高质量的文本嵌入表示。
     """
 
     @classmethod
     def required_components(cls) -> List[Type]:
-        """Components that should be included in the pipeline before this component."""
-        return [Tokenizer]
+        """获取此组件运行前必须包含在管道中的组件类型。
+        
+        该方法定义了组件的依赖关系，确保在特征提取之前文本已经被正确标记化。
+        
+        Returns:
+            必需的组件类型列表，包含标记化器组件
+        """
+        return [Tokenizer]  # 需要标记化器组件，用于将文本分割为标记
 
     @staticmethod
     def get_default_config() -> Dict[Text, Any]:
-        """The component's default config (see parent class for full docstring)."""
+        """返回组件的默认配置参数。
+        
+        该方法定义了 ConveRTFeaturizer 的所有可配置参数及其默认值。
+        配置参数主要控制模型 URL 的设置。
+        
+        Returns:
+            包含所有配置参数及其默认值的字典
+        """
         return {
-            **DenseFeaturizer.get_default_config(),
-            # Remote URL/Local path to model files
-            "model_url": None,
+            **DenseFeaturizer.get_default_config(),  # 继承密集特征化器基类的默认配置
+            # 模型文件配置
+            "model_url": None,  # 模型 URL 或本地路径，必须由用户指定
         }
 
     @staticmethod
     def required_packages() -> List[Text]:
-        """Packages needed to be installed."""
-        return ["tensorflow_text", "tensorflow_hub"]
+        """获取此组件运行所需的额外 Python 依赖项。
+        
+        该方法定义了组件运行所需的外部包，确保在组件初始化前已安装必要的依赖。
+        
+        Returns:
+            依赖包名称列表，包含 TensorFlow 相关包
+        """
+        return ["tensorflow_text", "tensorflow_hub"]  # 需要 TensorFlow 文本处理和模型中心包
 
     @staticmethod
     def supported_languages() -> Optional[List[Text]]:
-        """Determines which languages this component can work with.
-
-        Returns: A list of supported languages, or `None` to signify all are supported.
+        """确定此组件可以处理的语言。
+        
+        该方法返回组件支持的语言列表，用于语言兼容性检查。
+        
+        Returns:
+            支持的语言列表，或 None 表示支持所有语言
         """
-        return ["en"]
+        return ["en"]  # 仅支持英语，因为 ConveRT 模型是基于英语训练的
 
     @classmethod
     def create(
@@ -90,58 +120,89 @@ class ConveRTFeaturizer(DenseFeaturizer, GraphComponent):
         resource: Resource,
         execution_context: ExecutionContext,
     ) -> ConveRTFeaturizer:
-        """Creates a new component (see parent class for full docstring)."""
+        """创建新的组件实例。
+        
+        这是一个类方法，用于创建新的 ConveRTFeaturizer 实例。
+        通常在组件初始化时调用。
+        
+        Args:
+            config: 组件配置字典
+            model_storage: 模型存储接口
+            resource: 资源管理对象
+            execution_context: 执行上下文
+            
+        Returns:
+            新的 ConveRTFeaturizer 实例
+        """
         return cls(name=execution_context.node_name, config=config)
 
     def __init__(self, name: Text, config: Dict[Text, Any]) -> None:
-        """Initializes a `ConveRTFeaturizer`.
+        """初始化 ConveRTFeaturizer 实例。
+
+        该构造函数初始化 ConveRTFeaturizer 实例，加载 ConveRT 模型，
+        并设置模型的各种签名函数用于特征提取。
 
         Args:
-            name: An identifier for this featurizer.
-            config: The configuration.
+            name: 此特征化器的标识符
+            config: 配置参数
         """
-        super().__init__(name=name, config=config)
+        super().__init__(name=name, config=config)  # 调用父类构造函数
 
+        # 获取并处理模型 URL
         model_url = self._config["model_url"]
         self.model_url = (
             model_url
-            if rasa.nlu.utils.is_url(model_url)
-            else os.path.abspath(model_url)
+            if rasa.nlu.utils.is_url(model_url)  # 如果是 URL
+            else os.path.abspath(model_url)  # 如果是本地路径，转换为绝对路径
         )
 
+        # 加载 TensorFlow Hub 模型
         self.module = train_utils.load_tf_hub_model(self.model_url)
 
+        # 获取模型的各种签名函数
         self.tokenize_signature: WrappedFunction = self._get_signature(
-            "tokenize", self.module
+            "tokenize", self.module  # 标记化签名
         )
         self.sequence_encoding_signature: WrappedFunction = self._get_signature(
-            "encode_sequence", self.module
+            "encode_sequence", self.module  # 序列编码签名
         )
         self.sentence_encoding_signature: WrappedFunction = self._get_signature(
-            "default", self.module
+            "default", self.module  # 句子编码签名
         )
 
     @classmethod
     def validate_config(cls, config: Dict[Text, Any]) -> None:
-        """Validates that the component is configured properly."""
-        cls._validate_model_url(config)
+        """验证组件配置是否正确。
+        
+        该方法检查配置参数的有效性，确保组件能够正常运行。
+        主要验证模型 URL 的有效性。
+        
+        Args:
+            config: 要验证的配置字典
+        """
+        cls._validate_model_url(config)  # 验证模型 URL
 
     @staticmethod
     def _validate_model_files_exist(model_directory: Text) -> None:
-        """Check if essential model files exist inside the model_directory.
+        """检查模型目录中是否存在必要的模型文件。
+
+        该方法验证本地模型目录是否包含 ConveRT 模型所需的所有文件。
+        如果缺少任何必要文件，将抛出异常。
 
         Args:
-            model_directory: Directory to investigate
+            model_directory: 要检查的模型目录路径
         """
+        # 定义需要检查的模型文件列表
         files_to_check = [
-            os.path.join(model_directory, "saved_model.pb"),
-            os.path.join(model_directory, "variables/variables.index"),
-            os.path.join(model_directory, "variables/variables.data-00001-of-00002"),
-            os.path.join(model_directory, "variables/variables.data-00000-of-00002"),
+            os.path.join(model_directory, "saved_model.pb"),  # 保存的模型文件
+            os.path.join(model_directory, "variables/variables.index"),  # 变量索引文件
+            os.path.join(model_directory, "variables/variables.data-00001-of-00002"),  # 变量数据文件1
+            os.path.join(model_directory, "variables/variables.data-00000-of-00002"),  # 变量数据文件2
         ]
 
+        # 检查每个文件是否存在
         for file_path in files_to_check:
-            if not os.path.exists(file_path):
+            if not os.path.exists(file_path):  # 如果文件不存在
                 raise RasaException(
                     f"File {file_path} does not exist. "
                     f"Re-check the files inside the directory {model_directory}. "
@@ -235,13 +296,28 @@ class ConveRTFeaturizer(DenseFeaturizer, GraphComponent):
     def _compute_features(
         self, batch_examples: List[Message], attribute: Text = TEXT
     ) -> Tuple[np.ndarray, np.ndarray]:
+        """计算批量示例的特征。
+
+        该方法计算给定批量消息的句子级别和序列级别特征。
+        首先计算句子编码，然后计算序列编码，最后组合成最终特征。
+
+        Args:
+            batch_examples: 批量消息示例
+            attribute: 要处理的属性，默认为 TEXT
+
+        Returns:
+            包含序列特征和句子特征的元组
+        """
+        # 计算句子级别编码
         sentence_encodings = self._compute_sentence_encodings(batch_examples, attribute)
 
+        # 计算序列级别编码
         (
             sequence_encodings,
             number_of_tokens_in_sentence,
         ) = self._compute_sequence_encodings(batch_examples, attribute)
 
+        # 组合并返回最终特征
         return self._get_features(
             sentence_encodings, sequence_encodings, number_of_tokens_in_sentence
         )
@@ -249,32 +325,60 @@ class ConveRTFeaturizer(DenseFeaturizer, GraphComponent):
     def _compute_sentence_encodings(
         self, batch_examples: List[Message], attribute: Text = TEXT
     ) -> np.ndarray:
-        # Get text for attribute of each example
+        """计算句子级别编码。
+
+        该方法为批量示例计算句子级别的特征表示。
+        使用 ConveRT 模型的句子编码功能生成整个句子的嵌入。
+
+        Args:
+            batch_examples: 批量消息示例
+            attribute: 要处理的属性，默认为 TEXT
+
+        Returns:
+            句子级别编码的 numpy 数组
+        """
+        # 获取每个示例的指定属性文本
         batch_attribute_text = [ex.get(attribute) for ex in batch_examples]
+        # 使用 ConveRT 模型计算句子编码
         sentence_encodings = self._sentence_encoding_of_text(batch_attribute_text)
 
-        # convert them to a sequence of 1
+        # 将编码转换为序列长度为1的格式
         return np.reshape(sentence_encodings, (len(batch_examples), 1, -1))
 
     def _compute_sequence_encodings(
         self, batch_examples: List[Message], attribute: Text = TEXT
     ) -> Tuple[np.ndarray, List[int]]:
+        """计算序列级别编码。
+
+        该方法为批量示例计算序列级别的特征表示。
+        首先对文本进行标记化，然后使用 ConveRT 模型计算序列编码，
+        最后对齐子标记特征以匹配原始标记。
+
+        Args:
+            batch_examples: 批量消息示例
+            attribute: 要处理的属性，默认为 TEXT
+
+        Returns:
+            包含序列编码和每个句子中标记数量的元组
+        """
+        # 对每个示例进行标记化
         list_of_tokens = [
             self.tokenize(example, attribute) for example in batch_examples
         ]
 
+        # 计算每个句子中的标记数量
         number_of_tokens_in_sentence = [
             len(sent_tokens) for sent_tokens in list_of_tokens
         ]
 
-        # join the tokens to get a clean text to ensure the sequence length of
-        # the returned embeddings from ConveRT matches the length of the tokens
-        # (including sub-tokens)
+        # 将标记连接成文本，确保 ConveRT 返回的嵌入序列长度
+        # 与标记长度（包括子标记）匹配
         tokenized_texts = self._tokens_to_text(list_of_tokens)
+        # 使用 ConveRT 模型计算序列编码
         token_features = self._sequence_encoding_of_text(tokenized_texts)
 
-        # ConveRT might split up tokens into sub-tokens
-        # take the mean of the sub-token vectors and use that as the token vector
+        # ConveRT 可能将标记分割为子标记
+        # 取子标记向量的平均值作为标记向量
         token_features = train_utils.align_token_features(
             list_of_tokens, token_features
         )
@@ -335,39 +439,49 @@ class ConveRTFeaturizer(DenseFeaturizer, GraphComponent):
         ].numpy()
 
     def process_training_data(self, training_data: TrainingData) -> TrainingData:
-        """Featurize all message attributes in the training data with the ConveRT model.
+        """使用 ConveRT 模型对训练数据中的所有消息属性进行特征化。
+
+        该方法遍历所有密集可特征化的属性，对每个属性进行批量特征提取，
+        并显示进度条以跟踪处理进度。
 
         Args:
-            training_data: Training data to be featurized
+            training_data: 要进行特征化的训练数据
 
         Returns:
-            featurized training data
+            特征化后的训练数据
         """
-        batch_size = 64
+        batch_size = 64  # 批处理大小
 
+        # 遍历所有密集可特征化的属性
         for attribute in DENSE_FEATURIZABLE_ATTRIBUTES:
 
+            # 过滤出非空的示例
             non_empty_examples = list(
                 filter(lambda x: x.get(attribute), training_data.training_examples)
             )
 
+            # 创建进度条
             progress_bar = tqdm(
                 range(0, len(non_empty_examples), batch_size),
                 desc=attribute.capitalize() + " batches",
             )
+            
+            # 批量处理示例
             for batch_start_index in progress_bar:
                 batch_end_index = min(
                     batch_start_index + batch_size, len(non_empty_examples)
                 )
 
-                # Collect batch examples
+                # 收集批量示例
                 batch_examples = non_empty_examples[batch_start_index:batch_end_index]
 
+                # 计算批量特征
                 (
                     batch_sequence_features,
                     batch_sentence_features,
                 ) = self._compute_features(batch_examples, attribute)
 
+                # 设置特征到示例中
                 self._set_features(
                     batch_examples,
                     batch_sequence_features,

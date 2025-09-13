@@ -1,298 +1,312 @@
+# =============================================================================
+# Rasa NLU DIET Classifier 双意图和实体转换器分类器模块
+# 本模块实现了 DIET (Dual Intent and Entity Transformer) 分类器，
+# 用于同时进行意图分类和实体提取的多任务学习模型
+# =============================================================================
+
+# 导入未来版本注解支持
 from __future__ import annotations
 
-import copy
-import logging
-from collections import defaultdict
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Text, Tuple, Union, TypeVar, Type
+# 导入标准库模块
+import copy  # 深拷贝功能
+import logging  # 日志记录
+from collections import defaultdict  # 默认字典
+from pathlib import Path  # 路径处理
+from typing import Any, Dict, List, Optional, Text, Tuple, Union, TypeVar, Type  # 类型注解
 
-import numpy as np
-import scipy.sparse
-import tensorflow as tf
+# 导入科学计算库
+import numpy as np  # 数值计算
+import scipy.sparse  # 稀疏矩阵
+import tensorflow as tf  # 深度学习框架
 
-from rasa.exceptions import ModelNotFound
-from rasa.nlu.featurizers.featurizer import Featurizer
-from rasa.engine.graph import ExecutionContext, GraphComponent
-from rasa.engine.recipes.default_recipe import DefaultV1Recipe
-from rasa.engine.storage.resource import Resource
-from rasa.engine.storage.storage import ModelStorage
-from rasa.nlu.extractors.extractor import EntityExtractorMixin
-from rasa.nlu.classifiers.classifier import IntentClassifier
-import rasa.shared.utils.io
-import rasa.nlu.utils.bilou_utils as bilou_utils
-from rasa.shared.constants import DIAGNOSTIC_DATA
-from rasa.nlu.extractors.extractor import EntityTagSpec
-from rasa.nlu.classifiers import LABEL_RANKING_LENGTH
-from rasa.utils import train_utils
-from rasa.utils.tensorflow import rasa_layers
+# 导入 Rasa 核心模块
+from rasa.exceptions import ModelNotFound  # 模型未找到异常
+from rasa.nlu.featurizers.featurizer import Featurizer  # 特征化器基类
+from rasa.engine.graph import ExecutionContext, GraphComponent  # 图执行上下文和组件
+from rasa.engine.recipes.default_recipe import DefaultV1Recipe  # 默认配方
+from rasa.engine.storage.resource import Resource  # 资源管理
+from rasa.engine.storage.storage import ModelStorage  # 模型存储
+from rasa.nlu.extractors.extractor import EntityExtractorMixin  # 实体提取器混入
+from rasa.nlu.classifiers.classifier import IntentClassifier  # 意图分类器基类
+import rasa.shared.utils.io  # 共享工具模块
+import rasa.nlu.utils.bilou_utils as bilou_utils  # BILOU 标签工具
+from rasa.shared.constants import DIAGNOSTIC_DATA  # 诊断数据常量
+from rasa.nlu.extractors.extractor import EntityTagSpec  # 实体标签规范
+from rasa.nlu.classifiers import LABEL_RANKING_LENGTH  # 标签排名长度
+from rasa.utils import train_utils  # 训练工具
+from rasa.utils.tensorflow import rasa_layers  # Rasa TensorFlow 层
 from rasa.utils.tensorflow.feature_array import (
-    FeatureArray,
-    serialize_nested_feature_arrays,
-    deserialize_nested_feature_arrays,
+    FeatureArray,  # 特征数组
+    serialize_nested_feature_arrays,  # 序列化嵌套特征数组
+    deserialize_nested_feature_arrays,  # 反序列化嵌套特征数组
 )
-from rasa.utils.tensorflow.models import RasaModel, TransformerRasaModel
+from rasa.utils.tensorflow.models import RasaModel, TransformerRasaModel  # Rasa 模型基类
 from rasa.utils.tensorflow.model_data import (
-    RasaModelData,
-    FeatureSignature,
+    RasaModelData,  # Rasa 模型数据
+    FeatureSignature,  # 特征签名
 )
-from rasa.nlu.constants import TOKENS_NAMES, DEFAULT_TRANSFORMER_SIZE
+from rasa.nlu.constants import TOKENS_NAMES, DEFAULT_TRANSFORMER_SIZE  # NLU 常量
+
+# 导入 NLU 常量
 from rasa.shared.nlu.constants import (
-    SPLIT_ENTITIES_BY_COMMA_DEFAULT_VALUE,
-    TEXT,
-    INTENT,
-    INTENT_RESPONSE_KEY,
-    ENTITIES,
-    ENTITY_ATTRIBUTE_TYPE,
-    ENTITY_ATTRIBUTE_GROUP,
-    ENTITY_ATTRIBUTE_ROLE,
-    NO_ENTITY_TAG,
-    SPLIT_ENTITIES_BY_COMMA,
-)
-from rasa.shared.exceptions import InvalidConfigException
-from rasa.shared.nlu.training_data.training_data import TrainingData
-from rasa.shared.nlu.training_data.message import Message
-from rasa.utils.tensorflow.constants import (
-    DROP_SMALL_LAST_BATCH,
-    LABEL,
-    IDS,
-    HIDDEN_LAYERS_SIZES,
-    RENORMALIZE_CONFIDENCES,
-    SHARE_HIDDEN_LAYERS,
-    TRANSFORMER_SIZE,
-    NUM_TRANSFORMER_LAYERS,
-    NUM_HEADS,
-    BATCH_SIZES,
-    BATCH_STRATEGY,
-    EPOCHS,
-    RANDOM_SEED,
-    LEARNING_RATE,
-    RANKING_LENGTH,
-    LOSS_TYPE,
-    SIMILARITY_TYPE,
-    NUM_NEG,
-    SPARSE_INPUT_DROPOUT,
-    DENSE_INPUT_DROPOUT,
-    MASKED_LM,
-    ENTITY_RECOGNITION,
-    TENSORBOARD_LOG_DIR,
-    INTENT_CLASSIFICATION,
-    EVAL_NUM_EXAMPLES,
-    EVAL_NUM_EPOCHS,
-    UNIDIRECTIONAL_ENCODER,
-    DROP_RATE,
-    DROP_RATE_ATTENTION,
-    CONNECTION_DENSITY,
-    NEGATIVE_MARGIN_SCALE,
-    REGULARIZATION_CONSTANT,
-    SCALE_LOSS,
-    USE_MAX_NEG_SIM,
-    MAX_NEG_SIM,
-    MAX_POS_SIM,
-    EMBEDDING_DIMENSION,
-    BILOU_FLAG,
-    KEY_RELATIVE_ATTENTION,
-    VALUE_RELATIVE_ATTENTION,
-    MAX_RELATIVE_POSITION,
-    AUTO,
-    BALANCED,
-    CROSS_ENTROPY,
-    TENSORBOARD_LOG_LEVEL,
-    CONCAT_DIMENSION,
-    FEATURIZERS,
-    CHECKPOINT_MODEL,
-    SEQUENCE,
-    SENTENCE,
-    SEQUENCE_LENGTH,
-    DENSE_DIMENSION,
-    MASK,
-    CONSTRAIN_SIMILARITIES,
-    MODEL_CONFIDENCE,
-    SOFTMAX,
-    RUN_EAGERLY,
+    SPLIT_ENTITIES_BY_COMMA_DEFAULT_VALUE,  # 按逗号分割实体的默认值
+    TEXT,  # 文本常量
+    INTENT,  # 意图常量
+    INTENT_RESPONSE_KEY,  # 意图响应键
+    ENTITIES,  # 实体常量
+    ENTITY_ATTRIBUTE_TYPE,  # 实体属性类型
+    ENTITY_ATTRIBUTE_GROUP,  # 实体属性组
+    ENTITY_ATTRIBUTE_ROLE,  # 实体属性角色
+    NO_ENTITY_TAG,  # 非实体标签
+    SPLIT_ENTITIES_BY_COMMA,  # 按逗号分割实体
 )
 
+# 导入异常和训练数据
+from rasa.shared.exceptions import InvalidConfigException  # 无效配置异常
+from rasa.shared.nlu.training_data.training_data import TrainingData  # 训练数据
+from rasa.shared.nlu.training_data.message import Message  # 消息类
+
+# 导入 TensorFlow 常量
+from rasa.utils.tensorflow.constants import (
+    DROP_SMALL_LAST_BATCH,  # 丢弃小批次
+    LABEL,  # 标签
+    IDS,  # ID
+    HIDDEN_LAYERS_SIZES,  # 隐藏层大小
+    RENORMALIZE_CONFIDENCES,  # 重新归一化置信度
+    SHARE_HIDDEN_LAYERS,  # 共享隐藏层
+    TRANSFORMER_SIZE,  # 转换器大小
+    NUM_TRANSFORMER_LAYERS,  # 转换器层数
+    NUM_HEADS,  # 注意力头数
+    BATCH_SIZES,  # 批次大小
+    BATCH_STRATEGY,  # 批次策略
+    EPOCHS,  # 训练轮数
+    RANDOM_SEED,  # 随机种子
+    LEARNING_RATE,  # 学习率
+    RANKING_LENGTH,  # 排名长度
+    LOSS_TYPE,  # 损失类型
+    SIMILARITY_TYPE,  # 相似度类型
+    NUM_NEG,  # 负样本数
+    SPARSE_INPUT_DROPOUT,  # 稀疏输入丢弃
+    DENSE_INPUT_DROPOUT,  # 密集输入丢弃
+    MASKED_LM,  # 掩码语言模型
+    ENTITY_RECOGNITION,  # 实体识别
+    TENSORBOARD_LOG_DIR,  # TensorBoard 日志目录
+    INTENT_CLASSIFICATION,  # 意图分类
+    EVAL_NUM_EXAMPLES,  # 评估样本数
+    EVAL_NUM_EPOCHS,  # 评估轮数
+    UNIDIRECTIONAL_ENCODER,  # 单向编码器
+    DROP_RATE,  # 丢弃率
+    DROP_RATE_ATTENTION,  # 注意力丢弃率
+    CONNECTION_DENSITY,  # 连接密度
+    NEGATIVE_MARGIN_SCALE,  # 负边距缩放
+    REGULARIZATION_CONSTANT,  # 正则化常数
+    SCALE_LOSS,  # 缩放损失
+    USE_MAX_NEG_SIM,  # 使用最大负相似度
+    MAX_NEG_SIM,  # 最大负相似度
+    MAX_POS_SIM,  # 最大正相似度
+    EMBEDDING_DIMENSION,  # 嵌入维度
+    BILOU_FLAG,  # BILOU 标志
+    KEY_RELATIVE_ATTENTION,  # 键相对注意力
+    VALUE_RELATIVE_ATTENTION,  # 值相对注意力
+    MAX_RELATIVE_POSITION,  # 最大相对位置
+    AUTO,  # 自动
+    BALANCED,  # 平衡
+    CROSS_ENTROPY,  # 交叉熵
+    TENSORBOARD_LOG_LEVEL,  # TensorBoard 日志级别
+    CONCAT_DIMENSION,  # 连接维度
+    FEATURIZERS,  # 特征化器
+    CHECKPOINT_MODEL,  # 检查点模型
+    SEQUENCE,  # 序列
+    SENTENCE,  # 句子
+    SEQUENCE_LENGTH,  # 序列长度
+    DENSE_DIMENSION,  # 密集维度
+    MASK,  # 掩码
+    CONSTRAIN_SIMILARITIES,  # 约束相似度
+    MODEL_CONFIDENCE,  # 模型置信度
+    SOFTMAX,  # Softmax
+    RUN_EAGERLY,  # 急切运行
+)
+
+# 初始化日志记录器
 logger = logging.getLogger(__name__)
 
-SPARSE = "sparse"
-DENSE = "dense"
-LABEL_KEY = LABEL
-LABEL_SUB_KEY = IDS
+# 特征类型常量
+SPARSE = "sparse"  # 稀疏特征
+DENSE = "dense"    # 密集特征
 
+# 标签相关常量
+LABEL_KEY = LABEL      # 标签键
+LABEL_SUB_KEY = IDS    # 标签子键
+
+# 可能的实体标签类型
 POSSIBLE_TAGS = [ENTITY_ATTRIBUTE_TYPE, ENTITY_ATTRIBUTE_ROLE, ENTITY_ATTRIBUTE_GROUP]
 
+# DIET 分类器类型变量
 DIETClassifierT = TypeVar("DIETClassifierT", bound="DIETClassifier")
 
 
 @DefaultV1Recipe.register(
     [
-        DefaultV1Recipe.ComponentType.INTENT_CLASSIFIER,
-        DefaultV1Recipe.ComponentType.ENTITY_EXTRACTOR,
+        DefaultV1Recipe.ComponentType.INTENT_CLASSIFIER,  # 意图分类器组件类型
+        DefaultV1Recipe.ComponentType.ENTITY_EXTRACTOR,   # 实体提取器组件类型
     ],
-    is_trainable=True,
+    is_trainable=True,  # 可训练组件
 )
 class DIETClassifier(GraphComponent, IntentClassifier, EntityExtractorMixin):
-    """A multi-task model for intent classification and entity extraction.
+    """用于意图分类和实体提取的多任务模型。
 
-    DIET is Dual Intent and Entity Transformer.
-    The architecture is based on a transformer which is shared for both tasks.
-    A sequence of entity labels is predicted through a Conditional Random Field (CRF)
-    tagging layer on top of the transformer output sequence corresponding to the
-    input sequence of tokens. The transformer output for the ``__CLS__`` token and
-    intent labels are embedded into a single semantic vector space. We use the
-    dot-product loss to maximize the similarity with the target label and minimize
-    similarities with negative samples.
+    DIET 是双意图和实体转换器（Dual Intent and Entity Transformer）。
+    该架构基于一个转换器，该转换器在两个任务之间共享。
+    通过条件随机场（CRF）标记层在转换器输出序列上预测实体标签序列，
+    该序列对应于输入标记序列。``__CLS__`` 标记的转换器输出和意图标签
+    被嵌入到单个语义向量空间中。我们使用点积损失来最大化与目标标签的
+    相似性并最小化与负样本的相似性。
     """
 
     @classmethod
     def required_components(cls) -> List[Type]:
-        """Components that should be included in the pipeline before this component."""
-        return [Featurizer]
+        """在此组件之前应包含在管道中的组件。
+        
+        Returns:
+            必需的组件类型列表
+        """
+        return [Featurizer]  # 需要特征化器组件
 
     @staticmethod
     def get_default_config() -> Dict[Text, Any]:
-        """The component's default config (see parent class for full docstring)."""
-        # please make sure to update the docs when changing a default parameter
+        """组件的默认配置（完整文档字符串请参见父类）。
+        
+        Returns:
+            默认配置字典
+        """
+        # 更改默认参数时请确保更新文档
         return {
-            # ## Architecture of the used neural network
-            # Hidden layer sizes for layers before the embedding layers for user message
-            # and labels.
-            # The number of hidden layers is equal to the length of the corresponding
-            # list.
-            HIDDEN_LAYERS_SIZES: {TEXT: [], LABEL: []},
-            # Whether to share the hidden layer weights between user message and labels.
-            SHARE_HIDDEN_LAYERS: False,
-            # Number of units in transformer
-            TRANSFORMER_SIZE: DEFAULT_TRANSFORMER_SIZE,
-            # Number of transformer layers
-            NUM_TRANSFORMER_LAYERS: 2,
-            # Number of attention heads in transformer
-            NUM_HEADS: 4,
-            # If 'True' use key relative embeddings in attention
-            KEY_RELATIVE_ATTENTION: False,
-            # If 'True' use value relative embeddings in attention
-            VALUE_RELATIVE_ATTENTION: False,
-            # Max position for relative embeddings. Only in effect if key- or value
-            # relative attention are turned on
-            MAX_RELATIVE_POSITION: 5,
-            # Use a unidirectional or bidirectional encoder.
-            UNIDIRECTIONAL_ENCODER: False,
-            # ## Training parameters
-            # Initial and final batch sizes:
-            # Batch size will be linearly increased for each epoch.
-            BATCH_SIZES: [64, 256],
-            # Strategy used when creating batches.
-            # Can be either 'sequence' or 'balanced'.
-            BATCH_STRATEGY: BALANCED,
-            # Number of epochs to train
-            EPOCHS: 300,
-            # Set random seed to any 'int' to get reproducible results
-            RANDOM_SEED: None,
-            # Initial learning rate for the optimizer
-            LEARNING_RATE: 0.001,
-            # ## Parameters for embeddings
-            # Dimension size of embedding vectors
-            EMBEDDING_DIMENSION: 20,
-            # Dense dimension to use for sparse features.
-            DENSE_DIMENSION: {TEXT: 128, LABEL: 20},
-            # Default dimension to use for concatenating sequence and sentence features.
-            CONCAT_DIMENSION: {TEXT: 128, LABEL: 20},
-            # The number of incorrect labels. The algorithm will minimize
-            # their similarity to the user input during training.
-            NUM_NEG: 20,
-            # Type of similarity measure to use, either 'auto' or 'cosine' or 'inner'.
-            SIMILARITY_TYPE: AUTO,
-            # The type of the loss function, either 'cross_entropy' or 'margin'.
-            LOSS_TYPE: CROSS_ENTROPY,
-            # Number of top intents for which confidences should be reported.
-            # Set to 0 if confidences for all intents should be reported.
-            RANKING_LENGTH: LABEL_RANKING_LENGTH,
-            # Indicates how similar the algorithm should try to make embedding vectors
-            # for correct labels.
-            # Should be 0.0 < ... < 1.0 for 'cosine' similarity type.
-            MAX_POS_SIM: 0.8,
-            # Maximum negative similarity for incorrect labels.
-            # Should be -1.0 < ... < 1.0 for 'cosine' similarity type.
-            MAX_NEG_SIM: -0.4,
-            # If 'True' the algorithm only minimizes maximum similarity over
-            # incorrect intent labels, used only if 'loss_type' is set to 'margin'.
-            USE_MAX_NEG_SIM: True,
-            # If 'True' scale loss inverse proportionally to the confidence
-            # of the correct prediction
-            SCALE_LOSS: False,
-            # ## Regularization parameters
-            # The scale of regularization
-            REGULARIZATION_CONSTANT: 0.002,
-            # The scale of how important is to minimize the maximum similarity
-            # between embeddings of different labels,
-            # used only if 'loss_type' is set to 'margin'.
-            NEGATIVE_MARGIN_SCALE: 0.8,
-            # Dropout rate for encoder
-            DROP_RATE: 0.2,
-            # Dropout rate for attention
-            DROP_RATE_ATTENTION: 0,
-            # Fraction of trainable weights in internal layers.
-            CONNECTION_DENSITY: 0.2,
-            # If 'True' apply dropout to sparse input tensors
-            SPARSE_INPUT_DROPOUT: True,
-            # If 'True' apply dropout to dense input tensors
-            DENSE_INPUT_DROPOUT: True,
-            # ## Evaluation parameters
-            # How often calculate validation accuracy.
-            # Small values may hurt performance.
-            EVAL_NUM_EPOCHS: 20,
-            # How many examples to use for hold out validation set
-            # Large values may hurt performance, e.g. model accuracy.
-            # Set to 0 for no validation.
-            EVAL_NUM_EXAMPLES: 0,
-            # ## Model config
-            # If 'True' intent classification is trained and intent predicted.
-            INTENT_CLASSIFICATION: True,
-            # If 'True' named entity recognition is trained and entities predicted.
-            ENTITY_RECOGNITION: True,
-            # If 'True' random tokens of the input message will be masked and the model
-            # should predict those tokens.
-            MASKED_LM: False,
-            # 'BILOU_flag' determines whether to use BILOU tagging or not.
-            # If set to 'True' labelling is more rigorous, however more
-            # examples per entity are required.
-            # Rule of thumb: you should have more than 100 examples per entity.
-            BILOU_FLAG: True,
-            # If you want to use tensorboard to visualize training and validation
-            # metrics, set this option to a valid output directory.
-            TENSORBOARD_LOG_DIR: None,
-            # Define when training metrics for tensorboard should be logged.
-            # Either after every epoch or for every training step.
-            # Valid values: 'epoch' and 'batch'
-            TENSORBOARD_LOG_LEVEL: "epoch",
-            # Perform model checkpointing
-            CHECKPOINT_MODEL: False,
-            # Specify what features to use as sequence and sentence features
-            # By default all features in the pipeline are used.
-            FEATURIZERS: [],
-            # Split entities by comma, this makes sense e.g. for a list of ingredients
-            # in a recipie, but it doesn't make sense for the parts of an address
-            SPLIT_ENTITIES_BY_COMMA: True,
-            # If 'True' applies sigmoid on all similarity terms and adds
-            # it to the loss function to ensure that similarity values are
-            # approximately bounded. Used inside cross-entropy loss only.
-            CONSTRAIN_SIMILARITIES: False,
-            # Model confidence to be returned during inference. Currently, the only
-            # possible value is `softmax`.
-            MODEL_CONFIDENCE: SOFTMAX,
-            # Determines whether the confidences of the chosen top intents should be
-            # renormalized so that they sum up to 1. By default, we do not renormalize
-            # and return the confidences for the top intents as is.
-            # Note that renormalization only makes sense if confidences are generated
-            # via `softmax`.
-            RENORMALIZE_CONFIDENCES: False,
-            # Determines whether to construct the model graph or not.
-            # This is advantageous when the model is only trained or inferred for
-            # a few steps, as the compilation of the graph tends to take more time than
-            # running it. It is recommended to not adjust the optimization parameter.
-            RUN_EAGERLY: False,
-            # Determines whether the last batch should be dropped if it contains fewer
-            # than half a batch size of examples
-            DROP_SMALL_LAST_BATCH: False,
+            # ## 使用的神经网络架构
+            # 用户消息和标签的嵌入层之前的隐藏层大小
+            # 隐藏层数等于对应列表的长度
+            HIDDEN_LAYERS_SIZES: {TEXT: [], LABEL: []},  # 隐藏层大小
+            # 是否在用户消息和标签之间共享隐藏层权重
+            SHARE_HIDDEN_LAYERS: False,  # 共享隐藏层
+            # 转换器中的单元数
+            TRANSFORMER_SIZE: DEFAULT_TRANSFORMER_SIZE,  # 转换器大小
+            # 转换器层数
+            NUM_TRANSFORMER_LAYERS: 2,  # 转换器层数
+            # 转换器中的注意力头数
+            NUM_HEADS: 4,  # 注意力头数
+            # 如果为 'True'，在注意力中使用键相对嵌入
+            KEY_RELATIVE_ATTENTION: False,  # 键相对注意力
+            # 如果为 'True'，在注意力中使用值相对嵌入
+            VALUE_RELATIVE_ATTENTION: False,  # 值相对注意力
+            # 相对嵌入的最大位置。仅在键或值相对注意力开启时生效
+            MAX_RELATIVE_POSITION: 5,  # 最大相对位置
+            # 使用单向或双向编码器
+            UNIDIRECTIONAL_ENCODER: False,  # 单向编码器
+            # ## 训练参数
+            # 初始和最终批次大小：
+            # 批次大小将在每个轮次线性增加
+            BATCH_SIZES: [64, 256],  # 批次大小
+            # 创建批次时使用的策略
+            # 可以是 'sequence' 或 'balanced'
+            BATCH_STRATEGY: BALANCED,  # 批次策略
+            # 训练的轮数
+            EPOCHS: 300,  # 训练轮数
+            # 设置随机种子为任何 'int' 以获得可重现的结果
+            RANDOM_SEED: None,  # 随机种子
+            # 优化器的初始学习率
+            LEARNING_RATE: 0.001,  # 学习率
+            # ## 嵌入参数
+            # 嵌入向量的维度大小
+            EMBEDDING_DIMENSION: 20,  # 嵌入维度
+            # 用于稀疏特征的密集维度
+            DENSE_DIMENSION: {TEXT: 128, LABEL: 20},  # 密集维度
+            # 用于连接序列和句子特征的默认维度
+            CONCAT_DIMENSION: {TEXT: 128, LABEL: 20},  # 连接维度
+            # 错误标签的数量。算法将在训练期间最小化它们与用户输入的相似性
+            NUM_NEG: 20,  # 负样本数
+            # 使用的相似性度量类型，可以是 'auto'、'cosine' 或 'inner'
+            SIMILARITY_TYPE: AUTO,  # 相似度类型
+            # 损失函数的类型，可以是 'cross_entropy' 或 'margin'
+            LOSS_TYPE: CROSS_ENTROPY,  # 损失类型
+            # 应报告置信度的顶级意图数量
+            # 如果应报告所有意图的置信度，则设置为 0
+            RANKING_LENGTH: LABEL_RANKING_LENGTH,  # 排名长度
+            # 指示算法应尝试使正确标签的嵌入向量有多相似
+            # 对于 'cosine' 相似度类型，应为 0.0 < ... < 1.0
+            MAX_POS_SIM: 0.8,  # 最大正相似度
+            # 错误标签的最大负相似度
+            # 对于 'cosine' 相似度类型，应为 -1.0 < ... < 1.0
+            MAX_NEG_SIM: -0.4,  # 最大负相似度
+            # 如果为 'True'，算法仅最小化错误意图标签上的最大相似度，
+            # 仅在 'loss_type' 设置为 'margin' 时使用
+            USE_MAX_NEG_SIM: True,  # 使用最大负相似度
+            # 如果为 'True'，按正确预测的置信度反比例缩放损失
+            SCALE_LOSS: False,  # 缩放损失
+            # ## 正则化参数
+            # 正则化的规模
+            REGULARIZATION_CONSTANT: 0.002,  # 正则化常数
+            # 最小化不同标签嵌入之间最大相似度的重要性规模，
+            # 仅在 'loss_type' 设置为 'margin' 时使用
+            NEGATIVE_MARGIN_SCALE: 0.8,  # 负边距缩放
+            # 编码器的丢弃率
+            DROP_RATE: 0.2,  # 丢弃率
+            # 注意力的丢弃率
+            DROP_RATE_ATTENTION: 0,  # 注意力丢弃率
+            # 内部层中可训练权重的比例
+            CONNECTION_DENSITY: 0.2,  # 连接密度
+            # 如果为 'True'，对稀疏输入张量应用丢弃
+            SPARSE_INPUT_DROPOUT: True,  # 稀疏输入丢弃
+            # 如果为 'True'，对密集输入张量应用丢弃
+            DENSE_INPUT_DROPOUT: True,  # 密集输入丢弃
+            # ## 评估参数
+            # 计算验证准确性的频率
+            # 小值可能会损害性能
+            EVAL_NUM_EPOCHS: 20,  # 评估轮数
+            # 用于保留验证集的示例数量
+            # 大值可能会损害性能，例如模型准确性
+            # 设置为 0 表示无验证
+            EVAL_NUM_EXAMPLES: 0,  # 评估样本数
+            # ## 模型配置
+            # 如果为 'True'，训练意图分类并预测意图
+            INTENT_CLASSIFICATION: True,  # 意图分类
+            # 如果为 'True'，训练命名实体识别并预测实体
+            ENTITY_RECOGNITION: True,  # 实体识别
+            # 如果为 'True'，输入消息的随机标记将被掩码，模型应预测这些标记
+            MASKED_LM: False,  # 掩码语言模型
+            # 'BILOU_flag' 确定是否使用 BILOU 标记
+            # 如果设置为 'True'，标记更严格，但每个实体需要更多示例
+            # 经验法则：每个实体应该有超过 100 个示例
+            BILOU_FLAG: True,  # BILOU 标志
+            # 如果要使用 tensorboard 可视化训练和验证指标，
+            # 请将此选项设置为有效的输出目录
+            TENSORBOARD_LOG_DIR: None,  # TensorBoard 日志目录
+            # 定义何时记录 tensorboard 的训练指标
+            # 可以在每个轮次后或每个训练步骤后
+            # 有效值：'epoch' 和 'batch'
+            TENSORBOARD_LOG_LEVEL: "epoch",  # TensorBoard 日志级别
+            # 执行模型检查点
+            CHECKPOINT_MODEL: False,  # 检查点模型
+            # 指定用作序列和句子特征的特征
+            # 默认使用管道中的所有特征
+            FEATURIZERS: [],  # 特征化器
+            # 按逗号分割实体，这对于成分列表等有意义，
+            # 但对于地址的各个部分没有意义
+            SPLIT_ENTITIES_BY_COMMA: True,  # 按逗号分割实体
+            # 如果为 'True'，对所有相似性项应用 sigmoid 并将其添加到损失函数中，
+            # 以确保相似性值近似有界。仅在交叉熵损失内部使用
+            CONSTRAIN_SIMILARITIES: False,  # 约束相似度
+            # 推理期间返回的模型置信度。目前唯一可能的值是 `softmax`
+            MODEL_CONFIDENCE: SOFTMAX,  # 模型置信度
+            # 确定所选顶级意图的置信度是否应重新归一化，使其总和为 1
+            # 默认情况下，我们不重新归一化，按原样返回顶级意图的置信度
+            # 注意：重新归一化仅在通过 `softmax` 生成置信度时才有意义
+            RENORMALIZE_CONFIDENCES: False,  # 重新归一化置信度
+            # 确定是否构建模型图
+            # 当模型仅训练或推断几个步骤时，这是有利的，
+            # 因为图的编译往往比运行它花费更多时间
+            # 建议不要调整优化参数
+            RUN_EAGERLY: False,  # 急切运行
+            # 确定如果最后一个批次包含少于一半批次大小的示例是否应丢弃
+            DROP_SMALL_LAST_BATCH: False,  # 丢弃小批次
         }
 
     def __init__(
@@ -306,41 +320,59 @@ class DIETClassifier(GraphComponent, IntentClassifier, EntityExtractorMixin):
         model: Optional[RasaModel] = None,
         sparse_feature_sizes: Optional[Dict[Text, Dict[Text, List[int]]]] = None,
     ) -> None:
-        """Declare instance variables with default values."""
+        """使用默认值声明实例变量。
+        
+        Args:
+            config: 组件配置字典
+            model_storage: 模型存储
+            resource: 资源
+            execution_context: 执行上下文
+            index_label_id_mapping: 索引到标签ID的映射
+            entity_tag_specs: 实体标签规范列表
+            model: Rasa模型实例
+            sparse_feature_sizes: 稀疏特征大小
+        """
+        # 检查是否配置了训练轮数
         if EPOCHS not in config:
             rasa.shared.utils.io.raise_warning(
                 f"Please configure the number of '{EPOCHS}' in your configuration file."
                 f" We will change the default value of '{EPOCHS}' in the future to 1. "
             )
 
-        self.component_config = config
-        self._model_storage = model_storage
-        self._resource = resource
-        self._execution_context = execution_context
+        # 设置基本属性
+        self.component_config = config  # 组件配置
+        self._model_storage = model_storage  # 模型存储
+        self._resource = resource  # 资源
+        self._execution_context = execution_context  # 执行上下文
 
+        # 检查配置参数
         self._check_config_parameters()
 
-        # transform numbers to labels
-        self.index_label_id_mapping = index_label_id_mapping or {}
+        # 将数字转换为标签
+        self.index_label_id_mapping = index_label_id_mapping or {}  # 索引到标签ID的映射
 
-        self._entity_tag_specs = entity_tag_specs
+        self._entity_tag_specs = entity_tag_specs  # 实体标签规范
 
-        self.model = model
+        self.model = model  # 模型实例
 
+        # 设置检查点目录
         self.tmp_checkpoint_dir = None
         if self.component_config[CHECKPOINT_MODEL]:
             self.tmp_checkpoint_dir = Path(rasa.utils.io.create_temporary_directory())
 
-        self._label_data: Optional[RasaModelData] = None
-        self._data_example: Optional[Dict[Text, Dict[Text, List[FeatureArray]]]] = None
+        # 初始化数据相关属性
+        self._label_data: Optional[RasaModelData] = None  # 标签数据
+        self._data_example: Optional[Dict[Text, Dict[Text, List[FeatureArray]]]] = None  # 数据示例
 
+        # 初始化实体分割配置
         self.split_entities_config = rasa.utils.train_utils.init_split_entities(
             self.component_config[SPLIT_ENTITIES_BY_COMMA],
             SPLIT_ENTITIES_BY_COMMA_DEFAULT_VALUE,
         )
 
-        self.finetune_mode = self._execution_context.is_finetuning
-        self._sparse_feature_sizes = sparse_feature_sizes
+        # 设置微调模式和稀疏特征大小
+        self.finetune_mode = self._execution_context.is_finetuning  # 微调模式
+        self._sparse_feature_sizes = sparse_feature_sizes  # 稀疏特征大小
 
     # init helpers
     def _check_masked_lm(self) -> None:
@@ -877,7 +909,15 @@ class DIETClassifier(GraphComponent, IntentClassifier, EntityExtractorMixin):
         return len(np.unique(model_data.get(LABEL_KEY, LABEL_SUB_KEY))) >= 2
 
     def train(self, training_data: TrainingData) -> Resource:
-        """Train the embedding intent classifier on a data set."""
+        """在数据集上训练嵌入意图分类器。
+        
+        Args:
+            training_data: 训练数据
+            
+        Returns:
+            资源对象
+        """
+        # 预处理训练数据
         model_data = self.preprocess_train_data(training_data)
         if model_data.is_empty():
             logger.debug(
@@ -886,6 +926,7 @@ class DIETClassifier(GraphComponent, IntentClassifier, EntityExtractorMixin):
             )
             return self._resource
 
+        # 检查微调模式
         if not self.model and self.finetune_mode:
             raise rasa.shared.exceptions.InvalidParameterException(
                 f"{self.__class__.__name__} was instantiated "
@@ -895,6 +936,7 @@ class DIETClassifier(GraphComponent, IntentClassifier, EntityExtractorMixin):
                 f"to continue training in finetune mode."
             )
 
+        # 检查意图分类
         if self.component_config.get(INTENT_CLASSIFICATION):
             if not self._check_enough_labels(model_data):
                 logger.error(
@@ -903,25 +945,28 @@ class DIETClassifier(GraphComponent, IntentClassifier, EntityExtractorMixin):
                     f"Skipping training of classifier."
                 )
                 return self._resource
+                
+        # 检查实体识别
         if self.component_config.get(ENTITY_RECOGNITION):
             self.check_correct_entity_annotations(training_data)
 
-        # keep one example for persisting and loading
+        # 保存一个示例用于持久化和加载
         self._data_example = model_data.first_data_example()
 
         if not self.finetune_mode:
-            # No pre-trained model to load from. Create a new instance of the model.
+            # 没有预训练模型可加载。创建模型的新实例
             self.model = self._instantiate_model_class(model_data)
             self.model.compile(
                 optimizer=tf.keras.optimizers.Adam(
-                    self.component_config[LEARNING_RATE]
+                    self.component_config[LEARNING_RATE]  # 学习率
                 ),
-                run_eagerly=self.component_config[RUN_EAGERLY],
+                run_eagerly=self.component_config[RUN_EAGERLY],  # 急切运行
             )
         else:
             if self.model is None:
                 raise ModelNotFound("Model could not be found. ")
 
+            # 调整模型以进行增量训练
             self.model.adjust_for_incremental_training(
                 data_example=self._data_example,
                 new_sparse_feature_sizes=model_data.get_sparse_feature_sizes(),
@@ -929,32 +974,37 @@ class DIETClassifier(GraphComponent, IntentClassifier, EntityExtractorMixin):
             )
         self._sparse_feature_sizes = model_data.get_sparse_feature_sizes()
 
+        # 创建数据生成器
         data_generator, validation_data_generator = train_utils.create_data_generators(
             model_data,
-            self.component_config[BATCH_SIZES],
-            self.component_config[EPOCHS],
-            self.component_config[BATCH_STRATEGY],
-            self.component_config[EVAL_NUM_EXAMPLES],
-            self.component_config[RANDOM_SEED],
-            drop_small_last_batch=self.component_config[DROP_SMALL_LAST_BATCH],
+            self.component_config[BATCH_SIZES],  # 批次大小
+            self.component_config[EPOCHS],  # 训练轮数
+            self.component_config[BATCH_STRATEGY],  # 批次策略
+            self.component_config[EVAL_NUM_EXAMPLES],  # 评估样本数
+            self.component_config[RANDOM_SEED],  # 随机种子
+            drop_small_last_batch=self.component_config[DROP_SMALL_LAST_BATCH],  # 丢弃小批次
         )
+        
+        # 创建回调函数
         callbacks = train_utils.create_common_callbacks(
-            self.component_config[EPOCHS],
-            self.component_config[TENSORBOARD_LOG_DIR],
-            self.component_config[TENSORBOARD_LOG_LEVEL],
-            self.tmp_checkpoint_dir,
+            self.component_config[EPOCHS],  # 训练轮数
+            self.component_config[TENSORBOARD_LOG_DIR],  # TensorBoard日志目录
+            self.component_config[TENSORBOARD_LOG_LEVEL],  # TensorBoard日志级别
+            self.tmp_checkpoint_dir,  # 临时检查点目录
         )
 
+        # 训练模型
         self.model.fit(
-            data_generator,
-            epochs=self.component_config[EPOCHS],
-            validation_data=validation_data_generator,
-            validation_freq=self.component_config[EVAL_NUM_EPOCHS],
-            callbacks=callbacks,
-            verbose=False,
-            shuffle=False,  # we use custom shuffle inside data generator
+            data_generator,  # 数据生成器
+            epochs=self.component_config[EPOCHS],  # 训练轮数
+            validation_data=validation_data_generator,  # 验证数据
+            validation_freq=self.component_config[EVAL_NUM_EPOCHS],  # 验证频率
+            callbacks=callbacks,  # 回调函数
+            verbose=False,  # 不显示详细信息
+            shuffle=False,  # 我们在数据生成器内部使用自定义洗牌
         )
 
+        # 持久化模型
         self.persist()
 
         return self._resource
@@ -1044,21 +1094,34 @@ class DIETClassifier(GraphComponent, IntentClassifier, EntityExtractorMixin):
         return entities
 
     def process(self, messages: List[Message]) -> List[Message]:
-        """Augments the message with intents, entities, and diagnostic data."""
+        """用意图、实体和诊断数据增强消息。
+        
+        Args:
+            messages: 消息列表
+            
+        Returns:
+            增强后的消息列表
+        """
         for message in messages:
+            # 预测消息
             out = self._predict(message)
 
+            # 如果启用意图分类
             if self.component_config[INTENT_CLASSIFICATION]:
                 label, label_ranking = self._predict_label(out)
 
+                # 设置意图和意图排名
                 message.set(INTENT, label, add_to_output=True)
                 message.set("intent_ranking", label_ranking, add_to_output=True)
 
+            # 如果启用实体识别
             if self.component_config[ENTITY_RECOGNITION]:
                 entities = self._predict_entities(out, message)
 
+                # 设置实体
                 message.set(ENTITIES, entities, add_to_output=True)
 
+            # 如果应该添加诊断数据
             if out and self._execution_context.should_add_diagnostic_data:
                 message.add_diagnostic_data(
                     self._execution_context.node_name, out.get(DIAGNOSTIC_DATA)
@@ -1311,6 +1374,12 @@ class DIETClassifier(GraphComponent, IntentClassifier, EntityExtractorMixin):
 
 
 class DIET(TransformerRasaModel):
+    """DIET 模型类，继承自 TransformerRasaModel。
+    
+    DIET (Dual Intent and Entity Transformer) 是一个多任务学习模型，
+    用于同时进行意图分类和实体提取。
+    """
+    
     def __init__(
         self,
         data_signature: Dict[Text, Dict[Text, List[FeatureSignature]]],
@@ -1318,24 +1387,33 @@ class DIET(TransformerRasaModel):
         entity_tag_specs: Optional[List[EntityTagSpec]],
         config: Dict[Text, Any],
     ) -> None:
-        # create entity tag spec before calling super otherwise building the model
-        # will fail
+        """初始化 DIET 模型。
+        
+        Args:
+            data_signature: 数据签名
+            label_data: 标签数据
+            entity_tag_specs: 实体标签规范
+            config: 配置字典
+        """
+        # 在调用父类之前创建实体标签规范，否则构建模型会失败
         super().__init__("DIET", config, data_signature, label_data)
-        self._entity_tag_specs = self._ordered_tag_specs(entity_tag_specs)
+        self._entity_tag_specs = self._ordered_tag_specs(entity_tag_specs)  # 有序的标签规范
 
+        # 预测数据签名，只包含文本特征
         self.predict_data_signature = {
             feature_name: features
             for feature_name, features in data_signature.items()
             if TEXT in feature_name
         }
 
-        # tf training
-        self._create_metrics()
-        self._update_metrics_to_log()
+        # TensorFlow 训练相关
+        self._create_metrics()  # 创建指标
+        self._update_metrics_to_log()  # 更新要记录的指标
 
-        # needed for efficient prediction
-        self.all_labels_embed: Optional[tf.Tensor] = None
+        # 用于高效预测
+        self.all_labels_embed: Optional[tf.Tensor] = None  # 所有标签的嵌入
 
+        # 准备层
         self._prepare_layers()
 
     @staticmethod

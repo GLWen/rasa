@@ -1,268 +1,278 @@
+# =============================================================================
+# Rasa NLU Response Selector 响应选择器模块
+# 本模块实现了基于监督嵌入的响应选择器，用于从候选响应中选择最合适的响应
+# =============================================================================
+
+# 导入未来版本注解支持
 from __future__ import annotations
-import copy
-import logging
-from rasa.nlu.featurizers.featurizer import Featurizer
 
-import numpy as np
-import tensorflow as tf
+# 导入标准库模块
+import copy  # 深拷贝
+import logging  # 日志记录
+from rasa.nlu.featurizers.featurizer import Featurizer  # 特征化器基类
 
+# 导入科学计算库
+import numpy as np  # 数值计算
+import tensorflow as tf  # 深度学习框架
+
+# 导入类型注解
 from typing import Any, Dict, Optional, Text, Tuple, Union, List, Type
 
-from rasa.engine.graph import ExecutionContext
-from rasa.engine.recipes.default_recipe import DefaultV1Recipe
-from rasa.engine.storage.resource import Resource
-from rasa.engine.storage.storage import ModelStorage
-from rasa.shared.constants import DIAGNOSTIC_DATA
-from rasa.shared.nlu.training_data import util
-import rasa.shared.utils.io
-from rasa.shared.exceptions import InvalidConfigException
-from rasa.shared.nlu.training_data.training_data import TrainingData
-from rasa.shared.nlu.training_data.message import Message
-from rasa.nlu.classifiers.diet_classifier import (
-    DIET,
-    LABEL_KEY,
-    LABEL_SUB_KEY,
-    SENTENCE,
-    SEQUENCE,
-    DIETClassifier,
+# 导入 Rasa 核心模块
+from rasa.engine.graph import ExecutionContext  # 执行上下文
+from rasa.engine.recipes.default_recipe import DefaultV1Recipe  # 默认配方
+from rasa.engine.storage.resource import Resource  # 资源管理
+from rasa.engine.storage.storage import ModelStorage  # 模型存储
+from rasa.shared.constants import DIAGNOSTIC_DATA  # 诊断数据常量
+from rasa.shared.nlu.training_data import util  # 训练数据工具
+import rasa.shared.utils.io  # 共享工具模块
+from rasa.shared.exceptions import InvalidConfigException  # 配置异常
+from rasa.shared.nlu.training_data.training_data import TrainingData  # 训练数据
+from rasa.shared.nlu.training_data.message import Message  # 消息类
+from rasa.nlu.classifiers.diet_classifier import (  # DIET 分类器相关导入
+    DIET,  # DIET 模型基类
+    LABEL_KEY,  # 标签键
+    LABEL_SUB_KEY,  # 标签子键
+    SENTENCE,  # 句子特征
+    SEQUENCE,  # 序列特征
+    DIETClassifier,  # DIET 分类器
 )
-from rasa.nlu.extractors.extractor import EntityTagSpec
-from rasa.utils.tensorflow import rasa_layers
-from rasa.utils.tensorflow.constants import (
-    LABEL,
-    HIDDEN_LAYERS_SIZES,
-    SHARE_HIDDEN_LAYERS,
-    TRANSFORMER_SIZE,
-    NUM_TRANSFORMER_LAYERS,
-    NUM_HEADS,
-    BATCH_SIZES,
-    BATCH_STRATEGY,
-    EPOCHS,
-    RANDOM_SEED,
-    LEARNING_RATE,
-    RANKING_LENGTH,
-    RENORMALIZE_CONFIDENCES,
-    LOSS_TYPE,
-    SIMILARITY_TYPE,
-    NUM_NEG,
-    SPARSE_INPUT_DROPOUT,
-    DENSE_INPUT_DROPOUT,
-    MASKED_LM,
-    ENTITY_RECOGNITION,
-    INTENT_CLASSIFICATION,
-    EVAL_NUM_EXAMPLES,
-    EVAL_NUM_EPOCHS,
-    UNIDIRECTIONAL_ENCODER,
-    DROP_RATE,
-    DROP_RATE_ATTENTION,
-    CONNECTION_DENSITY,
-    NEGATIVE_MARGIN_SCALE,
-    REGULARIZATION_CONSTANT,
-    SCALE_LOSS,
-    USE_MAX_NEG_SIM,
-    MAX_NEG_SIM,
-    MAX_POS_SIM,
-    EMBEDDING_DIMENSION,
-    BILOU_FLAG,
-    KEY_RELATIVE_ATTENTION,
-    VALUE_RELATIVE_ATTENTION,
-    MAX_RELATIVE_POSITION,
-    RETRIEVAL_INTENT,
-    USE_TEXT_AS_LABEL,
-    CROSS_ENTROPY,
-    AUTO,
-    BALANCED,
-    TENSORBOARD_LOG_DIR,
-    TENSORBOARD_LOG_LEVEL,
-    CONCAT_DIMENSION,
-    FEATURIZERS,
-    CHECKPOINT_MODEL,
-    DENSE_DIMENSION,
-    CONSTRAIN_SIMILARITIES,
-    MODEL_CONFIDENCE,
-    SOFTMAX,
+from rasa.nlu.extractors.extractor import EntityTagSpec  # 实体标签规范
+from rasa.utils.tensorflow import rasa_layers  # Rasa TensorFlow 层
+from rasa.utils.tensorflow.constants import (  # TensorFlow 常量导入
+    LABEL,  # 标签常量
+    HIDDEN_LAYERS_SIZES,  # 隐藏层大小
+    SHARE_HIDDEN_LAYERS,  # 共享隐藏层
+    TRANSFORMER_SIZE,  # 转换器大小
+    NUM_TRANSFORMER_LAYERS,  # 转换器层数
+    NUM_HEADS,  # 注意力头数
+    BATCH_SIZES,  # 批次大小
+    BATCH_STRATEGY,  # 批次策略
+    EPOCHS,  # 训练轮数
+    RANDOM_SEED,  # 随机种子
+    LEARNING_RATE,  # 学习率
+    RANKING_LENGTH,  # 排名长度
+    RENORMALIZE_CONFIDENCES,  # 重新归一化置信度
+    LOSS_TYPE,  # 损失类型
+    SIMILARITY_TYPE,  # 相似度类型
+    NUM_NEG,  # 负样本数量
+    SPARSE_INPUT_DROPOUT,  # 稀疏输入丢弃
+    DENSE_INPUT_DROPOUT,  # 密集输入丢弃
+    MASKED_LM,  # 掩码语言模型
+    ENTITY_RECOGNITION,  # 实体识别
+    INTENT_CLASSIFICATION,  # 意图分类
+    EVAL_NUM_EXAMPLES,  # 评估示例数量
+    EVAL_NUM_EPOCHS,  # 评估轮数
+    UNIDIRECTIONAL_ENCODER,  # 单向编码器
+    DROP_RATE,  # 丢弃率
+    DROP_RATE_ATTENTION,  # 注意力丢弃率
+    CONNECTION_DENSITY,  # 连接密度
+    NEGATIVE_MARGIN_SCALE,  # 负边距缩放
+    REGULARIZATION_CONSTANT,  # 正则化常数
+    SCALE_LOSS,  # 损失缩放
+    USE_MAX_NEG_SIM,  # 使用最大负相似度
+    MAX_NEG_SIM,  # 最大负相似度
+    MAX_POS_SIM,  # 最大正相似度
+    EMBEDDING_DIMENSION,  # 嵌入维度
+    BILOU_FLAG,  # BILOU 标志
+    KEY_RELATIVE_ATTENTION,  # 键相对注意力
+    VALUE_RELATIVE_ATTENTION,  # 值相对注意力
+    MAX_RELATIVE_POSITION,  # 最大相对位置
+    RETRIEVAL_INTENT,  # 检索意图
+    USE_TEXT_AS_LABEL,  # 使用文本作为标签
+    CROSS_ENTROPY,  # 交叉熵
+    AUTO,  # 自动
+    BALANCED,  # 平衡
+    TENSORBOARD_LOG_DIR,  # TensorBoard 日志目录
+    TENSORBOARD_LOG_LEVEL,  # TensorBoard 日志级别
+    CONCAT_DIMENSION,  # 连接维度
+    FEATURIZERS,  # 特征化器
+    CHECKPOINT_MODEL,  # 检查点模型
+    DENSE_DIMENSION,  # 密集维度
+    CONSTRAIN_SIMILARITIES,  # 约束相似度
+    MODEL_CONFIDENCE,  # 模型置信度
+    SOFTMAX,  # Softmax
 )
-from rasa.nlu.constants import (
-    RESPONSE_SELECTOR_PROPERTY_NAME,
-    RESPONSE_SELECTOR_RETRIEVAL_INTENTS,
-    RESPONSE_SELECTOR_RESPONSES_KEY,
-    RESPONSE_SELECTOR_PREDICTION_KEY,
-    RESPONSE_SELECTOR_RANKING_KEY,
-    RESPONSE_SELECTOR_UTTER_ACTION_KEY,
-    RESPONSE_SELECTOR_DEFAULT_INTENT,
-    DEFAULT_TRANSFORMER_SIZE,
+from rasa.nlu.constants import (  # NLU 常量导入
+    RESPONSE_SELECTOR_PROPERTY_NAME,  # 响应选择器属性名
+    RESPONSE_SELECTOR_RETRIEVAL_INTENTS,  # 响应选择器检索意图
+    RESPONSE_SELECTOR_RESPONSES_KEY,  # 响应选择器响应键
+    RESPONSE_SELECTOR_PREDICTION_KEY,  # 响应选择器预测键
+    RESPONSE_SELECTOR_RANKING_KEY,  # 响应选择器排名键
+    RESPONSE_SELECTOR_UTTER_ACTION_KEY,  # 响应选择器话语动作键
+    RESPONSE_SELECTOR_DEFAULT_INTENT,  # 响应选择器默认意图
+    DEFAULT_TRANSFORMER_SIZE,  # 默认转换器大小
 )
-from rasa.shared.nlu.constants import (
-    TEXT,
-    INTENT,
-    RESPONSE,
-    INTENT_RESPONSE_KEY,
-    INTENT_NAME_KEY,
-    PREDICTED_CONFIDENCE_KEY,
+from rasa.shared.nlu.constants import (  # 共享 NLU 常量导入
+    TEXT,  # 文本常量
+    INTENT,  # 意图常量
+    RESPONSE,  # 响应常量
+    INTENT_RESPONSE_KEY,  # 意图响应键
+    INTENT_NAME_KEY,  # 意图名称键
+    PREDICTED_CONFIDENCE_KEY,  # 预测置信度键
 )
 
-from rasa.utils.tensorflow.model_data import RasaModelData
-from rasa.utils.tensorflow.models import RasaModel
+from rasa.utils.tensorflow.model_data import RasaModelData  # Rasa 模型数据
+from rasa.utils.tensorflow.models import RasaModel  # Rasa 模型
 
+# 初始化日志记录器
 logger = logging.getLogger(__name__)
 
 
 @DefaultV1Recipe.register(
-    DefaultV1Recipe.ComponentType.INTENT_CLASSIFIER, is_trainable=True
+    DefaultV1Recipe.ComponentType.INTENT_CLASSIFIER, is_trainable=True  # 意图分类器组件类型，可训练
 )
 class ResponseSelector(DIETClassifier):
-    """Response selector using supervised embeddings.
+    """使用监督嵌入的响应选择器。
 
-    The response selector embeds user inputs
-    and candidate response into the same space.
-    Supervised embeddings are trained by maximizing similarity between them.
-    It also provides rankings of the response that did not "win".
+    响应选择器将用户输入和候选响应嵌入到同一空间中。
+    监督嵌入通过最大化它们之间的相似性来训练。
+    它还提供未"获胜"响应的排名。
 
-    The supervised response selector needs to be preceded by
-    a featurizer in the pipeline.
-    This featurizer creates the features used for the embeddings.
-    It is recommended to use ``CountVectorsFeaturizer`` that
-    can be optionally preceded by ``SpacyNLP`` and ``SpacyTokenizer``.
+    监督响应选择器需要在管道中前置特征化器。
+    该特征化器创建用于嵌入的特征。
+    建议使用 ``CountVectorsFeaturizer``，
+    可以选择性地在 ``SpacyNLP`` 和 ``SpacyTokenizer`` 之前使用。
 
-    Based on the starspace idea from: https://arxiv.org/abs/1709.03856.
-    However, in this implementation the `mu` parameter is treated differently
-    and additional hidden layers are added together with dropout.
+    基于 starspace 思想：https://arxiv.org/abs/1709.03856。
+    但是，在此实现中，`mu` 参数的处理方式不同，
+    并且添加了额外的隐藏层和丢弃。
     """
 
     @classmethod
     def required_components(cls) -> List[Type]:
-        """Components that should be included in the pipeline before this component."""
-        return [Featurizer]
+        """在此组件之前应包含在管道中的组件。
+        
+        Returns:
+            必需的组件类型列表
+        """
+        return [Featurizer]  # 需要特征化器组件
 
     @staticmethod
     def get_default_config() -> Dict[Text, Any]:
-        """The component's default config (see parent class for full docstring)."""
+        """组件的默认配置（完整文档字符串请参见父类）。
+        
+        Returns:
+            默认配置字典
+        """
         return {
-            **DIETClassifier.get_default_config(),
-            # ## Architecture of the used neural network
-            # Hidden layer sizes for layers before the embedding layers for user message
-            # and labels.
-            # The number of hidden layers is equal to the length of the corresponding
-            # list.
-            HIDDEN_LAYERS_SIZES: {TEXT: [256, 128], LABEL: [256, 128]},
-            # Whether to share the hidden layer weights between input words
-            # and responses
-            SHARE_HIDDEN_LAYERS: False,
-            # Number of units in transformer
-            TRANSFORMER_SIZE: None,
-            # Number of transformer layers
-            NUM_TRANSFORMER_LAYERS: 0,
-            # Number of attention heads in transformer
-            NUM_HEADS: 4,
-            # If 'True' use key relative embeddings in attention
-            KEY_RELATIVE_ATTENTION: False,
-            # If 'True' use key relative embeddings in attention
-            VALUE_RELATIVE_ATTENTION: False,
-            # Max position for relative embeddings. Only in effect if key-
-            # or value relative attention are turned on
-            MAX_RELATIVE_POSITION: 5,
-            # Use a unidirectional or bidirectional encoder.
-            UNIDIRECTIONAL_ENCODER: False,
-            # ## Training parameters
-            # Initial and final batch sizes:
-            # Batch size will be linearly increased for each epoch.
-            BATCH_SIZES: [64, 256],
-            # Strategy used when creating batches.
-            # Can be either 'sequence' or 'balanced'.
-            BATCH_STRATEGY: BALANCED,
-            # Number of epochs to train
-            EPOCHS: 300,
-            # Set random seed to any 'int' to get reproducible results
-            RANDOM_SEED: None,
-            # Initial learning rate for the optimizer
-            LEARNING_RATE: 0.001,
-            # ## Parameters for embeddings
-            # Dimension size of embedding vectors
-            EMBEDDING_DIMENSION: 20,
-            # Default dense dimension to use if no dense features are present.
-            DENSE_DIMENSION: {TEXT: 512, LABEL: 512},
-            # Default dimension to use for concatenating sequence and sentence features.
-            CONCAT_DIMENSION: {TEXT: 512, LABEL: 512},
-            # The number of incorrect labels. The algorithm will minimize
-            # their similarity to the user input during training.
-            NUM_NEG: 20,
-            # Type of similarity measure to use, either 'auto' or 'cosine' or 'inner'.
-            SIMILARITY_TYPE: AUTO,
-            # The type of the loss function, either 'cross_entropy' or 'margin'.
-            LOSS_TYPE: CROSS_ENTROPY,
-            # Number of top actions for which confidences should be predicted.
-            # Set to 0 if confidences for all intents should be reported.
-            RANKING_LENGTH: 10,
-            # Determines whether the confidences of the chosen top actions should be
-            # renormalized so that they sum up to 1. By default, we do not renormalize
-            # and return the confidences for the top actions as is.
-            # Note that renormalization only makes sense if confidences are generated
-            # via `softmax`.
-            RENORMALIZE_CONFIDENCES: False,
-            # Indicates how similar the algorithm should try to make embedding vectors
-            # for correct labels.
-            # Should be 0.0 < ... < 1.0 for 'cosine' similarity type.
-            MAX_POS_SIM: 0.8,
-            # Maximum negative similarity for incorrect labels.
-            # Should be -1.0 < ... < 1.0 for 'cosine' similarity type.
-            MAX_NEG_SIM: -0.4,
-            # If 'True' the algorithm only minimizes maximum similarity over
-            # incorrect intent labels, used only if 'loss_type' is set to 'margin'.
-            USE_MAX_NEG_SIM: True,
-            # Scale loss inverse proportionally to confidence of correct prediction
-            SCALE_LOSS: True,
-            # ## Regularization parameters
-            # The scale of regularization
-            REGULARIZATION_CONSTANT: 0.002,
-            # Fraction of trainable weights in internal layers.
-            CONNECTION_DENSITY: 1.0,
-            # The scale of how important is to minimize the maximum similarity
-            # between embeddings of different labels.
-            NEGATIVE_MARGIN_SCALE: 0.8,
-            # Dropout rate for encoder
-            DROP_RATE: 0.2,
-            # Dropout rate for attention
-            DROP_RATE_ATTENTION: 0,
-            # If 'True' apply dropout to sparse input tensors
-            SPARSE_INPUT_DROPOUT: False,
-            # If 'True' apply dropout to dense input tensors
-            DENSE_INPUT_DROPOUT: False,
-            # ## Evaluation parameters
-            # How often calculate validation accuracy.
-            # Small values may hurt performance, e.g. model accuracy.
-            EVAL_NUM_EPOCHS: 20,
-            # How many examples to use for hold out validation set
-            # Large values may hurt performance, e.g. model accuracy.
-            EVAL_NUM_EXAMPLES: 0,
-            # ## Selector config
-            # If 'True' random tokens of the input message will be masked and the model
-            # should predict those tokens.
-            MASKED_LM: False,
-            # Name of the intent for which this response selector is to be trained
-            RETRIEVAL_INTENT: None,
-            # Boolean flag to check if actual text of the response
-            # should be used as ground truth label for training the model.
-            USE_TEXT_AS_LABEL: False,
-            # If you want to use tensorboard to visualize training
-            # and validation metrics,
-            # set this option to a valid output directory.
-            TENSORBOARD_LOG_DIR: None,
-            # Define when training metrics for tensorboard should be logged.
-            # Either after every epoch or for every training step.
-            # Valid values: 'epoch' and 'batch'
-            TENSORBOARD_LOG_LEVEL: "epoch",
-            # Specify what features to use as sequence and sentence features
-            # By default all features in the pipeline are used.
-            FEATURIZERS: [],
-            # Perform model checkpointing
-            CHECKPOINT_MODEL: False,
-            # if 'True' applies sigmoid on all similarity terms and adds it
-            # to the loss function to ensure that similarity values are
-            # approximately bounded. Used inside cross-entropy loss only.
-            CONSTRAIN_SIMILARITIES: False,
-            # Model confidence to be returned during inference. Currently, the only
-            # possible value is `softmax`.
-            MODEL_CONFIDENCE: SOFTMAX,
+            **DIETClassifier.get_default_config(),  # 继承 DIET 分类器配置
+            # ## 使用的神经网络架构
+            # 用户消息和标签的嵌入层之前的隐藏层大小
+            # 隐藏层数量等于对应列表的长度
+            HIDDEN_LAYERS_SIZES: {TEXT: [256, 128], LABEL: [256, 128]},  # 隐藏层大小
+            # 是否在输入词和响应之间共享隐藏层权重
+            SHARE_HIDDEN_LAYERS: False,  # 共享隐藏层
+            # 转换器中的单元数
+            TRANSFORMER_SIZE: None,  # 转换器大小
+            # 转换器层数
+            NUM_TRANSFORMER_LAYERS: 0,  # 转换器层数
+            # 转换器中注意力头数
+            NUM_HEADS: 4,  # 注意力头数
+            # 如果为 'True'，在注意力中使用键相对嵌入
+            KEY_RELATIVE_ATTENTION: False,  # 键相对注意力
+            # 如果为 'True'，在注意力中使用值相对嵌入
+            VALUE_RELATIVE_ATTENTION: False,  # 值相对注意力
+            # 相对嵌入的最大位置。仅在键或值相对注意力开启时生效
+            MAX_RELATIVE_POSITION: 5,  # 最大相对位置
+            # 使用单向或双向编码器
+            UNIDIRECTIONAL_ENCODER: False,  # 单向编码器
+            # ## 训练参数
+            # 初始和最终批次大小：
+            # 批次大小将在每个轮次线性增加
+            BATCH_SIZES: [64, 256],  # 批次大小
+            # 创建批次时使用的策略
+            # 可以是 'sequence' 或 'balanced'
+            BATCH_STRATEGY: BALANCED,  # 批次策略
+            # 训练的轮次数
+            EPOCHS: 300,  # 训练轮数
+            # 设置随机种子为任何 'int' 以获得可重现的结果
+            RANDOM_SEED: None,  # 随机种子
+            # 优化器的初始学习率
+            LEARNING_RATE: 0.001,  # 学习率
+            # ## 嵌入参数
+            # 嵌入向量的维度大小
+            EMBEDDING_DIMENSION: 20,  # 嵌入维度
+            # 如果没有密集特征时使用的默认密集维度
+            DENSE_DIMENSION: {TEXT: 512, LABEL: 512},  # 密集维度
+            # 用于连接序列和句子特征的默认维度
+            CONCAT_DIMENSION: {TEXT: 512, LABEL: 512},  # 连接维度
+            # 错误标签的数量。算法将在训练期间最小化
+            # 它们与用户输入的相似性
+            NUM_NEG: 20,  # 负样本数量
+            # 使用的相似度度量类型，'auto'、'cosine' 或 'inner'
+            SIMILARITY_TYPE: AUTO,  # 相似度类型
+            # 损失函数的类型，'cross_entropy' 或 'margin'
+            LOSS_TYPE: CROSS_ENTROPY,  # 损失类型
+            # 应预测置信度的顶级动作数量
+            # 如果应报告所有意图的置信度，则设置为 0
+            RANKING_LENGTH: 10,  # 排名长度
+            # 确定所选顶级动作的置信度是否应重新归一化，
+            # 使它们总和为 1。默认情况下，我们不重新归一化
+            # 并按原样返回顶级动作的置信度
+            # 注意：重新归一化仅在通过 `softmax` 生成置信度时才有意义
+            RENORMALIZE_CONFIDENCES: False,  # 重新归一化置信度
+            # 指示算法应尝试使正确标签的嵌入向量相似
+            # 对于 'cosine' 相似度类型，应为 0.0 < ... < 1.0
+            MAX_POS_SIM: 0.8,  # 最大正相似度
+            # 错误标签的最大负相似度
+            # 对于 'cosine' 相似度类型，应为 -1.0 < ... < 1.0
+            MAX_NEG_SIM: -0.4,  # 最大负相似度
+            # 如果为 'True'，算法仅最小化错误意图标签上的最大相似度，
+            # 仅在 'loss_type' 设置为 'margin' 时使用
+            USE_MAX_NEG_SIM: True,  # 使用最大负相似度
+            # 与正确预测的置信度成反比地缩放损失
+            SCALE_LOSS: True,  # 损失缩放
+            # ## 正则化参数
+            # 正则化的规模
+            REGULARIZATION_CONSTANT: 0.002,  # 正则化常数
+            # 内部层中可训练权重的比例
+            CONNECTION_DENSITY: 1.0,  # 连接密度
+            # 最小化不同标签嵌入之间最大相似度的重要性的规模
+            NEGATIVE_MARGIN_SCALE: 0.8,  # 负边距缩放
+            # 编码器的丢弃率
+            DROP_RATE: 0.2,  # 丢弃率
+            # 注意力的丢弃率
+            DROP_RATE_ATTENTION: 0,  # 注意力丢弃率
+            # 如果为 'True'，对稀疏输入张量应用丢弃
+            SPARSE_INPUT_DROPOUT: False,  # 稀疏输入丢弃
+            # 如果为 'True'，对密集输入张量应用丢弃
+            DENSE_INPUT_DROPOUT: False,  # 密集输入丢弃
+            # ## 评估参数
+            # 计算验证准确性的频率
+            # 小值可能损害性能，例如模型准确性
+            EVAL_NUM_EPOCHS: 20,  # 评估轮数
+            # 用于保留验证集的示例数量
+            # 大值可能损害性能，例如模型准确性
+            EVAL_NUM_EXAMPLES: 0,  # 评估示例数量
+            # ## 选择器配置
+            # 如果为 'True'，输入消息的随机标记将被掩码，
+            # 模型应预测这些标记
+            MASKED_LM: False,  # 掩码语言模型
+            # 此响应选择器要训练的意图名称
+            RETRIEVAL_INTENT: None,  # 检索意图
+            # 布尔标志，检查响应的实际文本是否应
+            # 用作训练模型的基本真实标签
+            USE_TEXT_AS_LABEL: False,  # 使用文本作为标签
+            # 如果要使用 tensorboard 可视化训练和验证指标，
+            # 请将此选项设置为有效的输出目录
+            TENSORBOARD_LOG_DIR: None,  # TensorBoard 日志目录
+            # 定义何时记录 tensorboard 的训练指标
+            # 在每个轮次后或每个训练步骤后
+            # 有效值：'epoch' 和 'batch'
+            TENSORBOARD_LOG_LEVEL: "epoch",  # TensorBoard 日志级别
+            # 指定用作序列和句子特征的特征
+            # 默认使用管道中的所有特征
+            FEATURIZERS: [],  # 特征化器
+            # 执行模型检查点
+            CHECKPOINT_MODEL: False,  # 检查点模型
+            # 如果为 'True'，对所有相似度项应用 sigmoid 并将其
+            # 添加到损失函数中，以确保相似度值近似有界
+            # 仅在交叉熵损失内部使用
+            CONSTRAIN_SIMILARITIES: False,  # 约束相似度
+            # 推理期间返回的模型置信度。目前，唯一
+            # 可能的值是 `softmax`
+            MODEL_CONFIDENCE: SOFTMAX,  # 模型置信度
         }
 
     def __init__(
@@ -278,37 +288,36 @@ class ResponseSelector(DIETClassifier):
         responses: Optional[Dict[Text, List[Dict[Text, Any]]]] = None,
         sparse_feature_sizes: Optional[Dict[Text, Dict[Text, List[int]]]] = None,
     ) -> None:
-        """Declare instance variables with default values.
+        """使用默认值声明实例变量。
 
         Args:
-            config: Configuration for the component.
-            model_storage: Storage which graph components can use to persist and load
-                themselves.
-            resource: Resource locator for this component which can be used to persist
-                and load itself from the `model_storage`.
-            execution_context: Information about the current graph run.
-            index_label_id_mapping: Mapping between label and index used for encoding.
-            entity_tag_specs: Format specification all entity tags.
-            model: Model architecture.
-            all_retrieval_intents: All retrieval intents defined in the data.
-            responses: All responses defined in the data.
-            finetune_mode: If `True` loads the model with pre-trained weights,
-                otherwise initializes it with random weights.
-            sparse_feature_sizes: Sizes of the sparse features the model was trained on.
+            config: 组件的配置
+            model_storage: 图组件可用于持久化和加载自己的存储
+            resource: 此组件的资源定位器，可用于从 `model_storage` 持久化和加载自身
+            execution_context: 关于当前图运行的信息
+            index_label_id_mapping: 用于编码的标签和索引之间的映射
+            entity_tag_specs: 所有实体标签的格式规范
+            model: 模型架构
+            all_retrieval_intents: 数据中定义的所有检索意图
+            responses: 数据中定义的所有响应
+            finetune_mode: 如果为 `True`，使用预训练权重加载模型，
+                否则使用随机权重初始化
+            sparse_feature_sizes: 模型训练的稀疏特征的大小
         """
-        component_config = config
+        component_config = config  # 组件配置
 
-        # the following properties cannot be adapted for the ResponseSelector
-        component_config[INTENT_CLASSIFICATION] = True
-        component_config[ENTITY_RECOGNITION] = False
-        component_config[BILOU_FLAG] = None
+        # 以下属性不能为 ResponseSelector 调整
+        component_config[INTENT_CLASSIFICATION] = True  # 意图分类
+        component_config[ENTITY_RECOGNITION] = False  # 实体识别
+        component_config[BILOU_FLAG] = None  # BILOU 标志
 
-        # Initialize defaults
-        self.responses = responses or {}
-        self.all_retrieval_intents = all_retrieval_intents or []
-        self.retrieval_intent = None
-        self.use_text_as_label = False
+        # 初始化默认值
+        self.responses = responses or {}  # 响应字典
+        self.all_retrieval_intents = all_retrieval_intents or []  # 所有检索意图
+        self.retrieval_intent = None  # 检索意图
+        self.use_text_as_label = False  # 使用文本作为标签
 
+        # 调用父类初始化
         super().__init__(
             component_config,
             model_storage,

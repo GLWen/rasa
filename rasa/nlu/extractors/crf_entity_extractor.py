@@ -1,50 +1,68 @@
+# =============================================================================
+# Rasa NLU CRF Entity Extractor 条件随机场实体提取器模块
+# 本模块实现了基于条件随机场（CRF）的命名实体识别功能，
+# 用于从文本中提取实体信息
+# =============================================================================
+
+# 导入未来版本注解支持
 from __future__ import annotations
 
-import logging
-import typing
-from collections import OrderedDict
-from enum import Enum
-from typing import Any, Dict, List, Optional, Text, Tuple, Callable, Type
+# 导入标准库模块
+import logging  # 日志记录
+import typing  # 类型注解
+from collections import OrderedDict  # 有序字典
+from enum import Enum  # 枚举类
+from typing import Any, Dict, List, Optional, Text, Tuple, Callable, Type  # 类型注解
 
-import numpy as np
+# 导入科学计算库
+import numpy as np  # 数值计算
 
-import rasa.nlu.utils.bilou_utils as bilou_utils
-import rasa.shared.utils.io
-import rasa.utils.train_utils
-from rasa.engine.graph import GraphComponent, ExecutionContext
-from rasa.engine.recipes.default_recipe import DefaultV1Recipe
-from rasa.engine.storage.resource import Resource
-from rasa.engine.storage.storage import ModelStorage
-from rasa.nlu.constants import TOKENS_NAMES
-from rasa.nlu.extractors.extractor import EntityExtractorMixin
-from rasa.nlu.test import determine_token_labels
-from rasa.nlu.tokenizers.spacy_tokenizer import POS_TAG_KEY
-from rasa.nlu.tokenizers.tokenizer import Token, Tokenizer
-from rasa.shared.constants import DOCS_URL_COMPONENTS
+# 导入 Rasa 核心模块
+import rasa.nlu.utils.bilou_utils as bilou_utils  # BILOU 标签工具
+import rasa.shared.utils.io  # 共享工具模块
+import rasa.utils.train_utils  # 训练工具
+from rasa.engine.graph import GraphComponent, ExecutionContext  # 图组件和执行上下文
+from rasa.engine.recipes.default_recipe import DefaultV1Recipe  # 默认配方
+from rasa.engine.storage.resource import Resource  # 资源管理
+from rasa.engine.storage.storage import ModelStorage  # 模型存储
+from rasa.nlu.constants import TOKENS_NAMES  # 标记名称常量
+from rasa.nlu.extractors.extractor import EntityExtractorMixin  # 实体提取器混入
+from rasa.nlu.test import determine_token_labels  # 确定标记标签
+from rasa.nlu.tokenizers.spacy_tokenizer import POS_TAG_KEY  # 词性标记键
+from rasa.nlu.tokenizers.tokenizer import Token, Tokenizer  # 标记和标记化器
+from rasa.shared.constants import DOCS_URL_COMPONENTS  # 文档URL常量
 from rasa.shared.nlu.constants import (
-    TEXT,
-    ENTITIES,
-    ENTITY_ATTRIBUTE_TYPE,
-    ENTITY_ATTRIBUTE_GROUP,
-    ENTITY_ATTRIBUTE_ROLE,
-    NO_ENTITY_TAG,
-    SPLIT_ENTITIES_BY_COMMA,
-    SPLIT_ENTITIES_BY_COMMA_DEFAULT_VALUE,
+    TEXT,  # 文本常量
+    ENTITIES,  # 实体常量
+    ENTITY_ATTRIBUTE_TYPE,  # 实体属性类型
+    ENTITY_ATTRIBUTE_GROUP,  # 实体属性组
+    ENTITY_ATTRIBUTE_ROLE,  # 实体属性角色
+    NO_ENTITY_TAG,  # 非实体标签
+    SPLIT_ENTITIES_BY_COMMA,  # 按逗号分割实体
+    SPLIT_ENTITIES_BY_COMMA_DEFAULT_VALUE,  # 按逗号分割实体默认值
 )
-from rasa.shared.nlu.training_data.message import Message
-from rasa.shared.nlu.training_data.training_data import TrainingData
-from rasa.utils.tensorflow.constants import BILOU_FLAG, FEATURIZERS
+from rasa.shared.nlu.training_data.message import Message  # 消息类
+from rasa.shared.nlu.training_data.training_data import TrainingData  # 训练数据
+from rasa.utils.tensorflow.constants import BILOU_FLAG, FEATURIZERS  # TensorFlow 常量
 
+# 初始化日志记录器
 logger = logging.getLogger(__name__)
 
+# 类型检查时导入 CRF
 if typing.TYPE_CHECKING:
     from sklearn_crfsuite import CRF
 
-
-CONFIG_FEATURES = "features"
+# 配置特征常量
+CONFIG_FEATURES = "features"  # 特征配置键
 
 
 class CRFToken:
+    """CRF 标记类，用于存储标记的特征信息。
+    
+    该类封装了用于 CRF 训练和预测的标记特征，
+    包括文本、词性、模式、密集特征和实体标签。
+    """
+    
     def __init__(
         self,
         text: Text,
@@ -55,148 +73,189 @@ class CRFToken:
         entity_role_tag: Text,
         entity_group_tag: Text,
     ):
-        self.text = text
-        self.pos_tag = pos_tag
-        self.pattern = pattern
-        self.dense_features = dense_features
-        self.entity_tag = entity_tag
-        self.entity_role_tag = entity_role_tag
-        self.entity_group_tag = entity_group_tag
+        """初始化 CRF 标记。
+        
+        Args:
+            text: 标记文本
+            pos_tag: 词性标记
+            pattern: 模式特征
+            dense_features: 密集特征数组
+            entity_tag: 实体标签
+            entity_role_tag: 实体角色标签
+            entity_group_tag: 实体组标签
+        """
+        self.text = text  # 标记文本
+        self.pos_tag = pos_tag  # 词性标记
+        self.pattern = pattern  # 模式特征
+        self.dense_features = dense_features  # 密集特征数组
+        self.entity_tag = entity_tag  # 实体标签
+        self.entity_role_tag = entity_role_tag  # 实体角色标签
+        self.entity_group_tag = entity_group_tag  # 实体组标签
 
     def to_dict(self) -> Dict[str, Any]:
+        """将 CRF 标记转换为字典格式。
+        
+        Returns:
+            包含标记信息的字典
+        """
         return {
-            "text": self.text,
-            "pos_tag": self.pos_tag,
-            "pattern": self.pattern,
-            "dense_features": [str(x) for x in list(self.dense_features)],
-            "entity_tag": self.entity_tag,
-            "entity_role_tag": self.entity_role_tag,
-            "entity_group_tag": self.entity_group_tag,
+            "text": self.text,  # 标记文本
+            "pos_tag": self.pos_tag,  # 词性标记
+            "pattern": self.pattern,  # 模式特征
+            "dense_features": [str(x) for x in list(self.dense_features)],  # 密集特征（转换为字符串）
+            "entity_tag": self.entity_tag,  # 实体标签
+            "entity_role_tag": self.entity_role_tag,  # 实体角色标签
+            "entity_group_tag": self.entity_group_tag,  # 实体组标签
         }
 
     @classmethod
     def create_from_dict(cls, data: Dict[str, Any]) -> "CRFToken":
+        """从字典创建 CRF 标记实例。
+        
+        Args:
+            data: 包含标记信息的字典
+            
+        Returns:
+            CRF 标记实例
+        """
         return cls(
-            data["text"],
-            data["pos_tag"],
-            data["pattern"],
-            np.array([float(x) for x in data["dense_features"]]),
-            data["entity_tag"],
-            data["entity_role_tag"],
-            data["entity_group_tag"],
+            data["text"],  # 标记文本
+            data["pos_tag"],  # 词性标记
+            data["pattern"],  # 模式特征
+            np.array([float(x) for x in data["dense_features"]]),  # 密集特征（转换为浮点数组）
+            data["entity_tag"],  # 实体标签
+            data["entity_role_tag"],  # 实体角色标签
+            data["entity_group_tag"],  # 实体组标签
         )
 
 
 class CRFEntityExtractorOptions(str, Enum):
-    """Features that can be used for the 'CRFEntityExtractor'."""
+    """CRF 实体提取器可以使用的特征选项。
+    
+    该枚举定义了 CRF 实体提取器支持的所有特征类型，
+    包括文本特征、词性特征、模式特征等。
+    """
 
-    PATTERN = "pattern"
-    LOW = "low"
-    TITLE = "title"
-    PREFIX5 = "prefix5"
-    PREFIX2 = "prefix2"
-    SUFFIX5 = "suffix5"
-    SUFFIX3 = "suffix3"
-    SUFFIX2 = "suffix2"
-    SUFFIX1 = "suffix1"
-    BIAS = "bias"
-    POS = "pos"
-    POS2 = "pos2"
-    UPPER = "upper"
-    DIGIT = "digit"
-    TEXT_DENSE_FEATURES = "text_dense_features"
-    ENTITY = "entity"
+    PATTERN = "pattern"  # 模式特征
+    LOW = "low"  # 小写特征
+    TITLE = "title"  # 标题特征
+    PREFIX5 = "prefix5"  # 5字符前缀
+    PREFIX2 = "prefix2"  # 2字符前缀
+    SUFFIX5 = "suffix5"  # 5字符后缀
+    SUFFIX3 = "suffix3"  # 3字符后缀
+    SUFFIX2 = "suffix2"  # 2字符后缀
+    SUFFIX1 = "suffix1"  # 1字符后缀
+    BIAS = "bias"  # 偏置特征
+    POS = "pos"  # 词性特征
+    POS2 = "pos2"  # 2字符词性特征
+    UPPER = "upper"  # 大写特征
+    DIGIT = "digit"  # 数字特征
+    TEXT_DENSE_FEATURES = "text_dense_features"  # 文本密集特征
+    ENTITY = "entity"  # 实体特征
 
 
 @DefaultV1Recipe.register(
-    DefaultV1Recipe.ComponentType.ENTITY_EXTRACTOR, is_trainable=True
+    DefaultV1Recipe.ComponentType.ENTITY_EXTRACTOR, is_trainable=True  # 实体提取器组件类型，可训练
 )
 class CRFEntityExtractor(GraphComponent, EntityExtractorMixin):
-    """Implements conditional random fields (CRF) to do named entity recognition."""
+    """实现条件随机场（CRF）进行命名实体识别。
+    
+    该类使用条件随机场算法从文本中提取实体信息，
+    支持多种特征类型和 BILOU 标记方案。
+    """
 
-    CONFIG_FEATURES = "features"
+    CONFIG_FEATURES = "features"  # 特征配置键
 
+    # 特征函数字典，将特征选项映射到提取函数
     function_dict: Dict[Text, Callable[[CRFToken], Any]] = {
-        CRFEntityExtractorOptions.LOW: lambda crf_token: crf_token.text.lower(),
-        CRFEntityExtractorOptions.TITLE: lambda crf_token: crf_token.text.istitle(),
-        CRFEntityExtractorOptions.PREFIX5: lambda crf_token: crf_token.text[:5],
-        CRFEntityExtractorOptions.PREFIX2: lambda crf_token: crf_token.text[:2],
-        CRFEntityExtractorOptions.SUFFIX5: lambda crf_token: crf_token.text[-5:],
-        CRFEntityExtractorOptions.SUFFIX3: lambda crf_token: crf_token.text[-3:],
-        CRFEntityExtractorOptions.SUFFIX2: lambda crf_token: crf_token.text[-2:],
-        CRFEntityExtractorOptions.SUFFIX1: lambda crf_token: crf_token.text[-1:],
-        CRFEntityExtractorOptions.BIAS: lambda _: "bias",
-        CRFEntityExtractorOptions.POS: lambda crf_token: crf_token.pos_tag,
-        CRFEntityExtractorOptions.POS2: lambda crf_token: crf_token.pos_tag[:2]
+        CRFEntityExtractorOptions.LOW: lambda crf_token: crf_token.text.lower(),  # 小写文本
+        CRFEntityExtractorOptions.TITLE: lambda crf_token: crf_token.text.istitle(),  # 是否标题格式
+        CRFEntityExtractorOptions.PREFIX5: lambda crf_token: crf_token.text[:5],  # 5字符前缀
+        CRFEntityExtractorOptions.PREFIX2: lambda crf_token: crf_token.text[:2],  # 2字符前缀
+        CRFEntityExtractorOptions.SUFFIX5: lambda crf_token: crf_token.text[-5:],  # 5字符后缀
+        CRFEntityExtractorOptions.SUFFIX3: lambda crf_token: crf_token.text[-3:],  # 3字符后缀
+        CRFEntityExtractorOptions.SUFFIX2: lambda crf_token: crf_token.text[-2:],  # 2字符后缀
+        CRFEntityExtractorOptions.SUFFIX1: lambda crf_token: crf_token.text[-1:],  # 1字符后缀
+        CRFEntityExtractorOptions.BIAS: lambda _: "bias",  # 偏置特征
+        CRFEntityExtractorOptions.POS: lambda crf_token: crf_token.pos_tag,  # 词性标记
+        CRFEntityExtractorOptions.POS2: lambda crf_token: crf_token.pos_tag[:2]  # 2字符词性标记
         if crf_token.pos_tag is not None
         else None,
-        CRFEntityExtractorOptions.UPPER: lambda crf_token: crf_token.text.isupper(),
-        CRFEntityExtractorOptions.DIGIT: lambda crf_token: crf_token.text.isdigit(),
-        CRFEntityExtractorOptions.PATTERN: lambda crf_token: crf_token.pattern,
-        CRFEntityExtractorOptions.TEXT_DENSE_FEATURES: (
+        CRFEntityExtractorOptions.UPPER: lambda crf_token: crf_token.text.isupper(),  # 是否全大写
+        CRFEntityExtractorOptions.DIGIT: lambda crf_token: crf_token.text.isdigit(),  # 是否全数字
+        CRFEntityExtractorOptions.PATTERN: lambda crf_token: crf_token.pattern,  # 模式特征
+        CRFEntityExtractorOptions.TEXT_DENSE_FEATURES: (  # 文本密集特征
             lambda crf_token: CRFEntityExtractor._convert_dense_features_for_crfsuite(  # noqa: E501
                 crf_token
             )
         ),
-        CRFEntityExtractorOptions.ENTITY: lambda crf_token: crf_token.entity_tag,
+        CRFEntityExtractorOptions.ENTITY: lambda crf_token: crf_token.entity_tag,  # 实体标签
     }
 
     @classmethod
     def required_components(cls) -> List[Type]:
-        """Components that should be included in the pipeline before this component."""
-        return [Tokenizer]
+        """在此组件之前应包含在管道中的组件。
+        
+        Returns:
+            必需的组件类型列表
+        """
+        return [Tokenizer]  # 需要标记化器组件
 
     @staticmethod
     def get_default_config() -> Dict[Text, Any]:
-        """The component's default config (see parent class for full docstring)."""
+        """组件的默认配置（完整文档字符串请参见父类）。
+        
+        Returns:
+            默认配置字典
+        """
         return {
-            # BILOU_flag determines whether to use BILOU tagging or not.
-            # More rigorous however requires more examples per entity
-            # rule of thumb: use only if more than 100 egs. per entity
-            BILOU_FLAG: True,
-            # Split entities by comma, this makes sense e.g. for a list of ingredients
-            # in a recipie, but it doesn't make sense for the parts of an address
-            SPLIT_ENTITIES_BY_COMMA: True,
-            # crf_features is [before, token, after] array with before, token,
-            # after holding keys about which features to use for each token,
-            # for example, 'title' in array before will have the feature
-            # "is the preceding token in title case?"
-            # POS features require SpacyTokenizer
-            # pattern feature require RegexFeaturizer
-            CONFIG_FEATURES: [
-                [
-                    CRFEntityExtractorOptions.LOW,
-                    CRFEntityExtractorOptions.TITLE,
-                    CRFEntityExtractorOptions.UPPER,
+            # BILOU_flag 确定是否使用 BILOU 标记
+            # 更严格但每个实体需要更多示例
+            # 经验法则：仅当每个实体超过 100 个示例时使用
+            BILOU_FLAG: True,  # BILOU 标志
+            # 按逗号分割实体，这对于成分列表等有意义，
+            # 但对于地址的各个部分没有意义
+            SPLIT_ENTITIES_BY_COMMA: True,  # 按逗号分割实体
+            # crf_features 是 [before, token, after] 数组，其中 before、token、
+            # after 包含每个标记要使用的特征键，
+            # 例如，before 数组中的 'title' 将具有特征
+            # "前面的标记是标题格式吗？"
+            # POS 特征需要 SpacyTokenizer
+            # 模式特征需要 RegexFeaturizer
+            CONFIG_FEATURES: [  # 特征配置
+                [  # 前一个标记的特征
+                    CRFEntityExtractorOptions.LOW,  # 小写
+                    CRFEntityExtractorOptions.TITLE,  # 标题格式
+                    CRFEntityExtractorOptions.UPPER,  # 大写
                 ],
-                [
-                    CRFEntityExtractorOptions.LOW,
-                    CRFEntityExtractorOptions.BIAS,
-                    CRFEntityExtractorOptions.PREFIX5,
-                    CRFEntityExtractorOptions.PREFIX2,
-                    CRFEntityExtractorOptions.SUFFIX5,
-                    CRFEntityExtractorOptions.SUFFIX3,
-                    CRFEntityExtractorOptions.SUFFIX2,
-                    CRFEntityExtractorOptions.UPPER,
-                    CRFEntityExtractorOptions.TITLE,
-                    CRFEntityExtractorOptions.DIGIT,
-                    CRFEntityExtractorOptions.PATTERN,
+                [  # 当前标记的特征
+                    CRFEntityExtractorOptions.LOW,  # 小写
+                    CRFEntityExtractorOptions.BIAS,  # 偏置
+                    CRFEntityExtractorOptions.PREFIX5,  # 5字符前缀
+                    CRFEntityExtractorOptions.PREFIX2,  # 2字符前缀
+                    CRFEntityExtractorOptions.SUFFIX5,  # 5字符后缀
+                    CRFEntityExtractorOptions.SUFFIX3,  # 3字符后缀
+                    CRFEntityExtractorOptions.SUFFIX2,  # 2字符后缀
+                    CRFEntityExtractorOptions.UPPER,  # 大写
+                    CRFEntityExtractorOptions.TITLE,  # 标题格式
+                    CRFEntityExtractorOptions.DIGIT,  # 数字
+                    CRFEntityExtractorOptions.PATTERN,  # 模式
                 ],
-                [
-                    CRFEntityExtractorOptions.LOW,
-                    CRFEntityExtractorOptions.TITLE,
-                    CRFEntityExtractorOptions.UPPER,
+                [  # 后一个标记的特征
+                    CRFEntityExtractorOptions.LOW,  # 小写
+                    CRFEntityExtractorOptions.TITLE,  # 标题格式
+                    CRFEntityExtractorOptions.UPPER,  # 大写
                 ],
             ],
-            # The maximum number of iterations for optimization algorithms.
-            "max_iterations": 50,
-            # weight of the L1 regularization
-            "L1_c": 0.1,
-            # weight of the L2 regularization
-            "L2_c": 0.1,
-            # Name of dense featurizers to use.
-            # If list is empty all available dense features are used.
-            "featurizers": [],
+            # 优化算法的最大迭代次数
+            "max_iterations": 50,  # 最大迭代次数
+            # L1 正则化的权重
+            "L1_c": 0.1,  # L1 正则化系数
+            # L2 正则化的权重
+            "L2_c": 0.1,  # L2 正则化系数
+            # 要使用的密集特征化器名称
+            # 如果列表为空，则使用所有可用的密集特征
+            "featurizers": [],  # 特征化器列表
         }
 
     def __init__(
@@ -206,26 +265,41 @@ class CRFEntityExtractor(GraphComponent, EntityExtractorMixin):
         resource: Resource,
         entity_taggers: Optional[Dict[Text, "CRF"]] = None,
     ) -> None:
-        """Creates an instance of entity extractor."""
-        self.component_config = config
-        self._model_storage = model_storage
-        self._resource = resource
+        """创建实体提取器实例。
+        
+        Args:
+            config: 组件配置字典
+            model_storage: 模型存储
+            resource: 资源
+            entity_taggers: 实体标记器字典
+        """
+        self.component_config = config  # 组件配置
+        self._model_storage = model_storage  # 模型存储
+        self._resource = resource  # 资源
 
-        self.entity_taggers = entity_taggers
+        self.entity_taggers = entity_taggers  # 实体标记器
 
+        # CRF 顺序：类型、角色、组
         self.crf_order = [
-            ENTITY_ATTRIBUTE_TYPE,
-            ENTITY_ATTRIBUTE_ROLE,
-            ENTITY_ATTRIBUTE_GROUP,
+            ENTITY_ATTRIBUTE_TYPE,  # 实体属性类型
+            ENTITY_ATTRIBUTE_ROLE,  # 实体属性角色
+            ENTITY_ATTRIBUTE_GROUP,  # 实体属性组
         ]
 
+        # 验证配置
         self._validate_configuration()
 
+        # 初始化实体分割配置
         self.split_entities_config = rasa.utils.train_utils.init_split_entities(
             config[SPLIT_ENTITIES_BY_COMMA], SPLIT_ENTITIES_BY_COMMA_DEFAULT_VALUE
         )
 
     def _validate_configuration(self) -> None:
+        """验证配置参数。
+        
+        Raises:
+            ValueError: 如果特征列表数量不是奇数
+        """
         if len(self.component_config.get(CONFIG_FEATURES, [])) % 2 != 1:
             raise ValueError(
                 "Need an odd number of crf feature lists to have a center word."
@@ -248,9 +322,15 @@ class CRFEntityExtractor(GraphComponent, EntityExtractorMixin):
         return ["sklearn_crfsuite", "sklearn"]
 
     def train(self, training_data: TrainingData) -> Resource:
-        """Trains the extractor on a data set."""
-        # checks whether there is at least one
-        # example with an entity annotation
+        """在数据集上训练提取器。
+        
+        Args:
+            training_data: 训练数据
+            
+        Returns:
+            资源对象
+        """
+        # 检查是否至少有一个带实体注释的示例
         if not training_data.entity_examples:
             logger.debug(
                 "No training examples with entities present. Skip training"
@@ -258,16 +338,19 @@ class CRFEntityExtractor(GraphComponent, EntityExtractorMixin):
             )
             return self._resource
 
+        # 检查实体注释的正确性
         self.check_correct_entity_annotations(training_data)
 
+        # 如果启用 BILOU 标志，应用 BILOU 标记方案
         if self.component_config[BILOU_FLAG]:
             bilou_utils.apply_bilou_schema(training_data)
 
-        # only keep the CRFs for tags we actually have training data for
+        # 只保留我们实际有训练数据的标签的 CRF
         self._update_crf_order(training_data)
 
-        # filter out pre-trained entity examples
+        # 过滤掉预训练的实体示例
         entity_examples = self.filter_trainable_entities(training_data.nlu_examples)
+        # 过滤出有特征的示例
         entity_examples = [
             message
             for message in entity_examples
@@ -275,12 +358,15 @@ class CRFEntityExtractor(GraphComponent, EntityExtractorMixin):
                 attribute=TEXT, featurizers=self.component_config.get(FEATURIZERS)
             )
         ]
+        # 转换为 CRF 标记格式
         dataset = [self._convert_to_crf_tokens(example) for example in entity_examples]
 
+        # 训练模型
         self.entity_taggers = self.train_model(
             dataset, self.component_config, self.crf_order
         )
 
+        # 持久化模型
         self.persist(dataset)
 
         return self._resource
@@ -300,10 +386,20 @@ class CRFEntityExtractor(GraphComponent, EntityExtractorMixin):
         self.crf_order = _crf_order
 
     def process(self, messages: List[Message]) -> List[Message]:
-        """Augments messages with entities."""
+        """用实体增强消息。
+        
+        Args:
+            messages: 消息列表
+            
+        Returns:
+            增强后的消息列表
+        """
         for message in messages:
+            # 提取实体
             entities = self.extract_entities(message)
+            # 添加提取器名称
             entities = self.add_extractor_name(entities)
+            # 设置实体到消息中
             message.set(
                 ENTITIES, message.get(ENTITIES, []) + entities, add_to_output=True
             )
@@ -311,30 +407,43 @@ class CRFEntityExtractor(GraphComponent, EntityExtractorMixin):
         return messages
 
     def extract_entities(self, message: Message) -> List[Dict[Text, Any]]:
-        """Extract entities from the given message using the trained model(s)."""
+        """使用训练好的模型从给定消息中提取实体。
+        
+        Args:
+            message: 要提取实体的消息
+            
+        Returns:
+            提取的实体列表
+        """
+        # 检查是否有实体标记器和特征
         if self.entity_taggers is None or not message.features_present(
             attribute=TEXT, featurizers=self.component_config.get(FEATURIZERS)
         ):
             return []
 
+        # 获取标记和转换为 CRF 格式
         tokens = message.get(TOKENS_NAMES[TEXT])
         crf_tokens = self._convert_to_crf_tokens(message)
 
+        # 预测实体标签
         predictions: Dict[Text, List[Dict[Text, float]]] = {}
         for tag_name, entity_tagger in self.entity_taggers.items():
-            # use predicted entity tags as features for second level CRFs
+            # 对于第二级 CRF，使用预测的实体标签作为特征
             include_tag_features = tag_name != ENTITY_ATTRIBUTE_TYPE
             if include_tag_features:
                 self._add_tag_to_crf_token(crf_tokens, predictions)
 
+            # 将 CRF 标记转换为特征
             features = self._crf_tokens_to_features(
                 crf_tokens, self.component_config, include_tag_features
             )
+            # 预测标签概率
             predictions[tag_name] = entity_tagger.predict_marginals_single(features)
 
-        # convert predictions into a list of tags and a list of confidences
+        # 将预测转换为标签列表和置信度列表
         tags, confidences = self._tag_confidences(tokens, predictions)
 
+        # 将预测转换为实体
         return self.convert_predictions_into_entities(
             message.get(TEXT), tokens, tags, self.split_entities_config, confidences
         )

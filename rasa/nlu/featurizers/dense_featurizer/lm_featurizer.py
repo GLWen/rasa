@@ -1,89 +1,125 @@
+# 导入未来版本注解支持，允许使用字符串形式的类型注解
 from __future__ import annotations
-import numpy as np
-import logging
 
-from typing import Any, Text, List, Dict, Tuple, Type
-import tensorflow as tf
+# 导入科学计算库
+import numpy as np  # 数值计算库，提供多维数组和数学运算功能
+import logging  # 日志记录模块，用于记录程序运行状态和调试信息
 
-from rasa.engine.graph import ExecutionContext, GraphComponent
-from rasa.engine.recipes.default_recipe import DefaultV1Recipe
-from rasa.engine.storage.resource import Resource
-from rasa.engine.storage.storage import ModelStorage
-from rasa.nlu.featurizers.dense_featurizer.dense_featurizer import DenseFeaturizer
-from rasa.nlu.tokenizers.tokenizer import Token, Tokenizer
-from rasa.shared.nlu.training_data.training_data import TrainingData
-from rasa.shared.nlu.training_data.message import Message
-from rasa.nlu.constants import (
-    DENSE_FEATURIZABLE_ATTRIBUTES,
-    SEQUENCE_FEATURES,
-    SENTENCE_FEATURES,
-    NO_LENGTH_RESTRICTION,
-    NUMBER_OF_SUB_TOKENS,
-    TOKENS_NAMES,
+# 导入类型注解模块
+from typing import Any, Text, List, Dict, Tuple, Type  # 类型注解模块，提供类型提示功能
+
+# 导入深度学习框架
+import tensorflow as tf  # TensorFlow 深度学习框架，用于模型推理
+
+# 导入 Rasa 核心模块
+from rasa.engine.graph import ExecutionContext, GraphComponent  # 图组件和执行上下文，用于组件管理和执行控制
+from rasa.engine.recipes.default_recipe import DefaultV1Recipe  # 默认配方，用于组件注册和配置
+from rasa.engine.storage.resource import Resource  # 资源管理，用于模型资源的存储和访问
+from rasa.engine.storage.storage import ModelStorage  # 模型存储，提供模型持久化功能
+from rasa.nlu.featurizers.dense_featurizer.dense_featurizer import DenseFeaturizer  # 密集特征化器基类，提供密集特征提取的通用接口
+from rasa.nlu.tokenizers.tokenizer import Token, Tokenizer  # 标记化器，用于将文本分割为标记
+from rasa.shared.nlu.training_data.training_data import TrainingData  # 训练数据类，包含所有训练样本
+from rasa.shared.nlu.training_data.message import Message  # 消息类，表示训练数据中的单条消息
+from rasa.nlu.constants import (  # NLU 常量导入
+    DENSE_FEATURIZABLE_ATTRIBUTES,  # 可密集特征化的属性列表
+    SEQUENCE_FEATURES,  # 序列特征常量
+    SENTENCE_FEATURES,  # 句子特征常量
+    NO_LENGTH_RESTRICTION,  # 无长度限制常量
+    NUMBER_OF_SUB_TOKENS,  # 子标记数量常量
+    TOKENS_NAMES,  # 标记名称常量，定义各种标记的键名
 )
-from rasa.shared.nlu.constants import TEXT, ACTION_TEXT
-from rasa.utils import train_utils
-from rasa.utils.tensorflow.model_data import ragged_array_to_ndarray
+from rasa.shared.nlu.constants import TEXT, ACTION_TEXT  # NLU 常量，定义消息属性的键名
+from rasa.utils import train_utils  # 训练工具模块，提供训练相关功能
+from rasa.utils.tensorflow.model_data import ragged_array_to_ndarray  # TensorFlow 模型数据工具，用于不规则数组转换
 
+# 初始化日志记录器，用于记录组件的运行状态和调试信息
 logger = logging.getLogger(__name__)
 
+# 各种语言模型的最大序列长度限制字典
 MAX_SEQUENCE_LENGTHS = {
-    "bert": 512,
-    "gpt": 512,
-    "gpt2": 512,
-    "xlnet": NO_LENGTH_RESTRICTION,
-    "distilbert": 512,
-    "roberta": 512,
-    "camembert": 512,
+    "bert": 512,  # BERT 模型最大序列长度为 512
+    "gpt": 512,  # GPT 模型最大序列长度为 512
+    "gpt2": 512,  # GPT-2 模型最大序列长度为 512
+    "xlnet": NO_LENGTH_RESTRICTION,  # XLNet 模型无序列长度限制
+    "distilbert": 512,  # DistilBERT 模型最大序列长度为 512
+    "roberta": 512,  # RoBERTa 模型最大序列长度为 512
+    "camembert": 512,  # CamemBERT 模型最大序列长度为 512
 }
 
 
 @DefaultV1Recipe.register(
-    DefaultV1Recipe.ComponentType.MESSAGE_FEATURIZER, is_trainable=False
+    DefaultV1Recipe.ComponentType.MESSAGE_FEATURIZER, is_trainable=False  # 注册为消息特征化器组件类型，标记为不可训练组件
 )
 class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
-    """A featurizer that uses transformer-based language models.
+    """基于 Transformer 语言模型的特征化器。
 
-    This component loads a pre-trained language model
-    from the Transformers library (https://github.com/huggingface/transformers)
-    including BERT, GPT, GPT-2, xlnet, distilbert, and roberta.
-    It also tokenizes and featurizes the featurizable dense attributes of
-    each message.
+    该类继承自 DenseFeaturizer 和 GraphComponent，实现了基于预训练语言模型的密集特征提取。
+    该组件从 Transformers 库（https://github.com/huggingface/transformers）加载预训练的语言模型，
+    包括 BERT、GPT、GPT-2、XLNet、DistilBERT、RoBERTa 和 CamemBERT。
+    它还对每个消息的可密集特征化属性进行标记化和特征化处理。
+    
+    该特征化器能够生成高质量的上下文感知的文本嵌入表示，
+    适用于各种自然语言理解任务。
     """
 
     @classmethod
     def required_components(cls) -> List[Type]:
-        """Components that should be included in the pipeline before this component."""
-        return [Tokenizer]
+        """获取此组件运行前必须包含在管道中的组件类型。
+        
+        该方法定义了组件的依赖关系，确保在特征提取之前文本已经被正确标记化。
+        
+        Returns:
+            必需的组件类型列表，包含标记化器组件
+        """
+        return [Tokenizer]  # 需要标记化器组件，用于将文本分割为标记
 
     def __init__(
         self, config: Dict[Text, Any], execution_context: ExecutionContext
     ) -> None:
-        """Initializes the featurizer with the model in the config."""
+        """使用配置中的模型初始化特征化器。
+        
+        该构造函数初始化 LanguageModelFeaturizer 实例，加载模型元数据，
+        并实例化预训练的语言模型和标记化器。
+        
+        Args:
+            config: 组件配置字典
+            execution_context: 执行上下文，包含节点名称和执行模式信息
+        """
         super(LanguageModelFeaturizer, self).__init__(
-            execution_context.node_name, config
+            execution_context.node_name, config  # 调用父类构造函数
         )
-        self._load_model_metadata()
-        self._load_model_instance()
+        self._load_model_metadata()  # 加载模型元数据
+        self._load_model_instance()  # 加载模型实例
 
     @staticmethod
     def get_default_config() -> Dict[Text, Any]:
-        """Returns LanguageModelFeaturizer's default config."""
+        """返回 LanguageModelFeaturizer 的默认配置参数。
+        
+        该方法定义了 LanguageModelFeaturizer 的所有可配置参数及其默认值。
+        配置参数主要控制语言模型的选择和加载方式。
+        
+        Returns:
+            包含所有配置参数及其默认值的字典
+        """
         return {
-            **DenseFeaturizer.get_default_config(),
-            # name of the language model to load.
-            "model_name": "bert",
-            # Pre-Trained weights to be loaded(string)
-            "model_weights": None,
-            # an optional path to a specific directory to download
-            # and cache the pre-trained model weights.
-            "cache_dir": None,
+            **DenseFeaturizer.get_default_config(),  # 继承密集特征化器基类的默认配置
+            # 语言模型配置
+            "model_name": "bert",  # 要加载的语言模型名称，默认为 BERT
+            "model_weights": None,  # 预训练权重，None 表示使用默认权重
+            "cache_dir": None,  # 可选的缓存目录路径，用于下载和缓存预训练模型权重
         }
 
     @classmethod
     def validate_config(cls, config: Dict[Text, Any]) -> None:
-        """Validates the configuration."""
-        pass
+        """验证组件配置是否正确。
+        
+        该方法检查配置参数的有效性，确保组件能够正常运行。
+        当前实现为空，表示所有配置都被认为是有效的。
+        
+        Args:
+            config: 要验证的配置字典
+        """
+        pass  # 当前没有配置验证逻辑
 
     @classmethod
     def create(
@@ -93,30 +129,47 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
         resource: Resource,
         execution_context: ExecutionContext,
     ) -> LanguageModelFeaturizer:
-        """Creates a LanguageModelFeaturizer.
+        """创建 LanguageModelFeaturizer 实例。
 
-        Loads the model specified in the config.
+        该方法创建新的 LanguageModelFeaturizer 实例，并加载配置中指定的模型。
+        
+        Args:
+            config: 组件配置字典
+            model_storage: 模型存储接口
+            resource: 资源管理对象
+            execution_context: 执行上下文
+            
+        Returns:
+            新的 LanguageModelFeaturizer 实例
         """
         return cls(config, execution_context)
 
     @staticmethod
     def required_packages() -> List[Text]:
-        """Returns the extra python dependencies required."""
-        return ["transformers"]
+        """获取此组件运行所需的额外 Python 依赖项。
+        
+        该方法定义了组件运行所需的外部包，确保在组件初始化前已安装必要的依赖。
+        
+        Returns:
+            依赖包名称列表，包含 transformers 包
+        """
+        return ["transformers"]  # 需要 Hugging Face Transformers 库
 
     def _load_model_metadata(self) -> None:
-        """Loads the metadata for the specified model and set them as properties.
+        """加载指定模型的元数据并设置为属性。
 
-        This includes the model name, model weights, cache directory and the
-        maximum sequence length the model can handle.
+        该方法加载模型名称、模型权重、缓存目录和模型能处理的最大序列长度等元数据。
+        这些元数据将用于后续的模型加载和特征提取过程。
         """
         from rasa.nlu.utils.hugging_face.registry import (
-            model_class_dict,
-            model_weights_defaults,
+            model_class_dict,  # 模型类字典
+            model_weights_defaults,  # 模型权重默认值字典
         )
 
+        # 获取模型名称
         self.model_name = self._config["model_name"]
 
+        # 验证模型名称是否有效
         if self.model_name not in model_class_dict:
             raise KeyError(
                 f"'{self.model_name}' not a valid model name. Choose from "
@@ -124,9 +177,11 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
                 f"a new class inheriting from this class to support your model."
             )
 
+        # 获取模型权重和缓存目录
         self.model_weights = self._config["model_weights"]
         self.cache_dir = self._config["cache_dir"]
 
+        # 如果没有指定模型权重，使用默认权重
         if not self.model_weights:
             logger.info(
                 f"Model weights not specified. Will choose default model "
@@ -134,34 +189,41 @@ class LanguageModelFeaturizer(DenseFeaturizer, GraphComponent):
             )
             self.model_weights = model_weights_defaults[self.model_name]
 
+        # 设置模型的最大序列长度
         self.max_model_sequence_length = MAX_SEQUENCE_LENGTHS[self.model_name]
 
     def _load_model_instance(self) -> None:
-        """Tries to load the model instance.
+        """尝试加载模型实例。
 
-        Model loading should be skipped in unit tests.
-        See unit tests for examples.
+        该方法加载预训练的语言模型和标记化器实例。
+        在单元测试中应跳过模型加载，参见单元测试示例。
+
+        Note:
+            模型加载过程包括：
+            1. 加载标记化器
+            2. 加载预训练模型
+            3. 设置填充标记 ID
         """
         from rasa.nlu.utils.hugging_face.registry import (
-            model_class_dict,
-            model_tokenizer_dict,
+            model_class_dict,  # 模型类字典
+            model_tokenizer_dict,  # 标记化器类字典
         )
 
         logger.debug(f"Loading Tokenizer and Model for {self.model_name}")
 
+        # 加载标记化器
         self.tokenizer = model_tokenizer_dict[self.model_name].from_pretrained(
             self.model_weights, cache_dir=self.cache_dir
         )
+        # 加载预训练模型
         self.model = model_class_dict[self.model_name].from_pretrained(
             self.model_weights, cache_dir=self.cache_dir
         )
 
-        # Use a universal pad token since all transformer architectures do not have a
-        # consistent token. Instead of pad_token_id we use unk_token_id because
-        # pad_token_id is not set for all architectures. We can't add a new token as
-        # well since vocabulary resizing is not yet supported for TF classes.
-        # Also, this does not hurt the model predictions since we use an attention mask
-        # while feeding input.
+        # 使用通用填充标记，因为所有 Transformer 架构都没有一致的填充标记
+        # 使用 unk_token_id 而不是 pad_token_id，因为并非所有架构都设置了 pad_token_id
+        # 我们不能添加新标记，因为 TF 类还不支持词汇表调整大小
+        # 这不会影响模型预测，因为我们在输入时使用注意力掩码
         self.pad_token_id = self.tokenizer.unk_token_id
 
     def _lm_tokenize(self, text: Text) -> Tuple[List[int], List[Text]]:

@@ -1,178 +1,226 @@
+# =============================================================================
+# Rasa NLU Count Vectors Featurizer 计数向量特征化器模块
+# 本模块实现了基于 sklearn CountVectorizer 的稀疏特征提取器，
+# 用于将文本转换为词频向量特征，支持词级别和字符级别的特征提取
+# =============================================================================
+
+# 导入未来版本注解支持，允许使用字符串形式的类型注解
 from __future__ import annotations
 
-import logging
-import re
-from typing import Any, Dict, List, Optional, Text, Tuple, Set, Type, Union
+# 导入标准库模块
+import logging  # 日志记录模块，用于记录程序运行状态和错误信息
+import re  # 正则表达式模块，用于文本模式匹配和替换
+from typing import Any, Dict, List, Optional, Text, Tuple, Set, Type, Union  # 类型注解模块，提供类型提示功能
 
-import numpy as np
-import scipy.sparse
-from sklearn.feature_extraction.text import CountVectorizer
+# 导入科学计算库
+import numpy as np  # 数值计算库，提供多维数组和数学运算功能
+import scipy.sparse  # 稀疏矩阵库，用于高效存储和处理稀疏数据
+from sklearn.feature_extraction.text import CountVectorizer  # sklearn 计数向量化器，将文本转换为词频矩阵
 
-import rasa.shared.utils.io
-from rasa.engine.graph import GraphComponent, ExecutionContext
-from rasa.engine.recipes.default_recipe import DefaultV1Recipe
-from rasa.engine.storage.resource import Resource
-from rasa.engine.storage.storage import ModelStorage
-from rasa.nlu.constants import (
-    TOKENS_NAMES,
-    MESSAGE_ATTRIBUTES,
-    DENSE_FEATURIZABLE_ATTRIBUTES,
+# 导入 Rasa 核心模块
+import rasa.shared.utils.io  # 共享工具模块，提供文件读写和序列化功能
+from rasa.engine.graph import GraphComponent, ExecutionContext  # 图组件和执行上下文，用于组件管理和执行控制
+from rasa.engine.recipes.default_recipe import DefaultV1Recipe  # 默认配方，用于组件注册和配置
+from rasa.engine.storage.resource import Resource  # 资源管理，用于模型资源的存储和访问
+from rasa.engine.storage.storage import ModelStorage  # 模型存储，提供模型持久化功能
+from rasa.nlu.constants import (  # NLU 常量导入
+    TOKENS_NAMES,  # 标记名称常量，定义各种标记的键名
+    MESSAGE_ATTRIBUTES,  # 消息属性常量，定义消息的各种属性
+    DENSE_FEATURIZABLE_ATTRIBUTES,  # 可密集特征化的属性，支持密集特征提取的属性列表
 )
-from rasa.nlu.featurizers.sparse_featurizer.sparse_featurizer import SparseFeaturizer
-from rasa.nlu.tokenizers.tokenizer import Tokenizer
-from rasa.nlu.utils.spacy_utils import SpacyModel
-from rasa.shared.constants import DOCS_URL_COMPONENTS
-from rasa.shared.exceptions import RasaException, FileIOException
-from rasa.shared.nlu.constants import TEXT, INTENT, INTENT_RESPONSE_KEY, ACTION_NAME
-from rasa.shared.nlu.training_data.message import Message
-from rasa.shared.nlu.training_data.training_data import TrainingData
+from rasa.nlu.featurizers.sparse_featurizer.sparse_featurizer import SparseFeaturizer  # 稀疏特征化器基类，提供稀疏特征提取的通用接口
+from rasa.nlu.tokenizers.tokenizer import Tokenizer  # 标记化器，用于将文本分割为标记
+from rasa.nlu.utils.spacy_utils import SpacyModel  # Spacy 模型，提供自然语言处理功能
+from rasa.shared.constants import DOCS_URL_COMPONENTS  # 文档URL常量，指向组件文档的链接
+from rasa.shared.exceptions import RasaException, FileIOException  # Rasa 异常类，用于错误处理
+from rasa.shared.nlu.constants import TEXT, INTENT, INTENT_RESPONSE_KEY, ACTION_NAME  # NLU 常量，定义消息属性的键名
+from rasa.shared.nlu.training_data.message import Message  # 消息类，表示训练数据中的单条消息
+from rasa.shared.nlu.training_data.training_data import TrainingData  # 训练数据类，包含所有训练样本
 
+# 缓冲区槽前缀常量，用于标识缓冲区中的词汇表项
 BUFFER_SLOTS_PREFIX = "buf_"
 
+# 初始化日志记录器，用于记录组件的运行状态和调试信息
 logger = logging.getLogger(__name__)
 
 
 @DefaultV1Recipe.register(
-    DefaultV1Recipe.ComponentType.MESSAGE_FEATURIZER, is_trainable=True
+    DefaultV1Recipe.ComponentType.MESSAGE_FEATURIZER, is_trainable=True  # 注册为消息特征化器组件类型，标记为可训练组件
 )
 class CountVectorsFeaturizer(SparseFeaturizer, GraphComponent):
-    """Creates a sequence of token counts features based on sklearn's `CountVectorizer`.
+    """基于 sklearn 的 `CountVectorizer` 创建标记计数特征序列的稀疏特征化器。
 
-    All tokens which consist only of digits (e.g. 123 and 99
-    but not ab12d) will be represented by a single feature.
-
-    Set `analyzer` to 'char_wb'
-    to use the idea of Subword Semantic Hashing
-    from https://arxiv.org/abs/1810.07150.
+    该类继承自 SparseFeaturizer 和 GraphComponent，实现了基于词频的稀疏特征提取。
+    所有仅由数字组成的标记（例如 123 和 99，但不包括 ab12d）将由单个特征表示。
+    
+    支持两种分析模式：
+    1. 词级别分析（analyzer='word'）：基于词汇进行特征提取
+    2. 字符级别分析（analyzer='char_wb'）：基于字符n-gram进行特征提取
+    
+    将 `analyzer` 设置为 'char_wb' 以使用子词语义哈希的思想，
+    参考论文：https://arxiv.org/abs/1810.07150
     """
 
-    OOV_words: List[Text]
+    OOV_words: List[Text]  # 词汇表外词汇列表，存储训练时未见过但在预测时可能出现的词汇
 
     @classmethod
     def required_components(cls) -> List[Type]:
-        """Components that should be included in the pipeline before this component."""
-        return [Tokenizer]
+        """获取此组件运行前必须包含在管道中的组件类型。
+        
+        该方法定义了组件的依赖关系，确保在特征提取之前文本已经被正确标记化。
+        
+        Returns:
+            必需的组件类型列表，包含标记化器组件
+        """
+        return [Tokenizer]  # 需要标记化器组件，用于将文本分割为标记
 
     @staticmethod
     def get_default_config() -> Dict[Text, Any]:
-        """Returns the component's default config."""
+        """返回组件的默认配置参数。
+        
+        该方法定义了 CountVectorsFeaturizer 的所有可配置参数及其默认值。
+        配置参数主要来自 sklearn 的 CountVectorizer，并添加了 Rasa 特有的参数。
+        
+        Returns:
+            包含所有配置参数及其默认值的字典
+        """
         return {
-            **SparseFeaturizer.get_default_config(),
-            # whether to use a shared vocab
-            "use_shared_vocab": False,
-            # the parameters are taken from
-            # sklearn's CountVectorizer
-            # whether to use word or character n-grams
-            # 'char_wb' creates character n-grams inside word boundaries
-            # n-grams at the edges of words are padded with space.
-            "analyzer": "word",  # use 'char' or 'char_wb' for character
-            # remove accents during the preprocessing step
-            "strip_accents": None,  # {'ascii', 'unicode', None}
-            # list of stop words
-            "stop_words": None,  # string {'english'}, list, or None (default)
-            # min document frequency of a word to add to vocabulary
-            # float - the parameter represents a proportion of documents
-            # integer - absolute counts
-            "min_df": 1,  # float in range [0.0, 1.0] or int
-            # max document frequency of a word to add to vocabulary
-            # float - the parameter represents a proportion of documents
-            # integer - absolute counts
-            "max_df": 1.0,  # float in range [0.0, 1.0] or int
-            # set range of ngrams to be extracted
-            "min_ngram": 1,  # int
-            "max_ngram": 1,  # int
-            # limit vocabulary size
-            "max_features": None,  # int or None
-            # if convert all characters to lowercase
-            "lowercase": True,  # bool
-            # handling Out-Of-Vocabulary (OOV) words
-            # will be converted to lowercase if lowercase is True
-            "OOV_token": None,  # string or None
-            "OOV_words": [],  # string or list of strings
-            # indicates whether the featurizer should use the lemma of a word for
-            # counting (if available) or not
-            "use_lemma": True,
+            **SparseFeaturizer.get_default_config(),  # 继承稀疏特征化器基类的默认配置
+            # 词汇表配置
+            "use_shared_vocab": False,  # 是否使用共享词汇表，False表示每个属性使用独立词汇表
+            
+            # sklearn CountVectorizer 核心参数
+            "analyzer": "word",  # 分析器类型：'word'（词级别）或 'char_wb'（字符级别，词边界内）
+            "strip_accents": None,  # 去除重音符号的方式：'ascii'、'unicode' 或 None（不去除）
+            "stop_words": None,  # 停用词列表：'english'、自定义列表或 None（不使用停用词）
+            
+            # 文档频率过滤参数
+            "min_df": 1,  # 最小文档频率：词汇必须至少在指定数量的文档中出现才被包含
+            "max_df": 1.0,  # 最大文档频率：词汇在超过指定比例的文档中出现时被忽略
+            
+            # N-gram 范围配置
+            "min_ngram": 1,  # 最小 n-gram 长度，默认为1（单个词）
+            "max_ngram": 1,  # 最大 n-gram 长度，默认为1（单个词）
+            
+            # 词汇表大小限制
+            "max_features": None,  # 最大特征数量，None表示不限制
+            
+            # 文本预处理参数
+            "lowercase": True,  # 是否将所有字符转换为小写
+            
+            # 词汇表外（OOV）词汇处理
+            "OOV_token": None,  # OOV 标记，用于替换未见过词汇的占位符
+            "OOV_words": [],  # 预定义的 OOV 词汇列表
+            
+            # 词元化配置
+            "use_lemma": True,  # 是否使用词的词元形式进行计数（需要词元化器支持）
         }
 
     @staticmethod
     def required_packages() -> List[Text]:
-        """Any extra python dependencies required for this component to run."""
-        return ["sklearn"]
+        """获取此组件运行所需的额外 Python 依赖项。
+        
+        该方法定义了组件运行所需的外部包，确保在组件初始化前已安装必要的依赖。
+        
+        Returns:
+            依赖包名称列表，包含 sklearn 包
+        """
+        return ["sklearn"]  # 需要 sklearn 包，用于 CountVectorizer 功能
 
     def _load_count_vect_params(self) -> None:
+        """从配置中加载 CountVectorizer 相关参数到实例变量。
+        
+        该方法将配置字典中的参数提取到实例变量中，便于后续使用。
+        这些参数将用于初始化 sklearn 的 CountVectorizer 实例。
+        """
+        # 词汇表配置参数
+        self.use_shared_vocab = self._config["use_shared_vocab"]  # 是否使用共享词汇表，影响不同属性是否共享同一个词汇表
 
-        # Use shared vocabulary between text and all other attributes of Message
-        self.use_shared_vocab = self._config["use_shared_vocab"]
+        # 分析器配置参数
+        self.analyzer = self._config["analyzer"]  # 分析器类型，决定是基于词还是字符进行特征提取
 
-        # set analyzer
-        self.analyzer = self._config["analyzer"]
+        # 文本预处理参数
+        self.strip_accents = self._config["strip_accents"]  # 去除重音符号的方式，用于文本标准化
+        self.stop_words = self._config["stop_words"]  # 停用词列表，用于过滤常见但无意义的词汇
+        self.lowercase = self._config["lowercase"]  # 是否转换为小写，用于文本标准化
 
-        # remove accents during the preprocessing step
-        self.strip_accents = self._config["strip_accents"]
+        # 文档频率过滤参数
+        self.min_df = self._config["min_df"]  # 最小文档频率，词汇必须至少在此数量的文档中出现
+        self.max_df = self._config["max_df"]  # 最大文档频率，词汇超过此频率时被忽略
 
-        # list of stop words
-        self.stop_words = self._config["stop_words"]
+        # N-gram 范围参数
+        self.min_ngram = self._config["min_ngram"]  # 最小 n-gram 长度，定义特征提取的最小单位
+        self.max_ngram = self._config["max_ngram"]  # 最大 n-gram 长度，定义特征提取的最大单位
 
-        # min number of word occurancies in the document to add to vocabulary
-        self.min_df = self._config["min_df"]
+        # 词汇表大小限制参数
+        self.max_features = self._config["max_features"]  # 最大特征数量，限制词汇表的大小
 
-        # max number (fraction if float) of word occurancies
-        # in the document to add to vocabulary
-        self.max_df = self._config["max_df"]
-
-        # set ngram range
-        self.min_ngram = self._config["min_ngram"]
-        self.max_ngram = self._config["max_ngram"]
-
-        # limit vocabulary size
-        self.max_features = self._config["max_features"]
-
-        # if convert all characters to lowercase
-        self.lowercase = self._config["lowercase"]
-
-        # use the lemma of the words or not
-        self.use_lemma = self._config["use_lemma"]
+        # 词元化参数
+        self.use_lemma = self._config["use_lemma"]  # 是否使用词元形式，影响词汇的标准化程度
 
     def _load_vocabulary_params(self) -> Tuple[Text, List[Text]]:
-        OOV_token = self._config["OOV_token"]
+        """加载词汇表外（OOV）词汇相关参数。
+        
+        该方法处理 OOV 标记和 OOV 词汇的配置，确保配置的一致性和正确性。
+        如果启用了小写转换，会将 OOV 相关参数也转换为小写以保持一致性。
+        
+        Returns:
+            包含 OOV_token 和 OOV_words 的元组，用于后续的词汇表外词汇处理
+        """
+        OOV_token = self._config["OOV_token"]  # 获取 OOV 标记，用于替换未见过词汇的占位符
 
-        OOV_words = self._config["OOV_words"]
-        if OOV_words and not OOV_token:
+        OOV_words = self._config["OOV_words"]  # 获取预定义的 OOV 词汇列表
+        if OOV_words and not OOV_token:  # 如果提供了 OOV 词汇但没有提供 OOV 标记
             logger.error(
                 "The list OOV_words={} was given, but "
                 "OOV_token was not. OOV words are ignored."
                 "".format(OOV_words)
             )
-            self.OOV_words = []
+            self.OOV_words = []  # 清空 OOV 词汇列表，因为缺少 OOV 标记无法使用
 
-        if self.lowercase and OOV_token:
-            # convert to lowercase
+        if self.lowercase and OOV_token:  # 如果启用了小写转换且存在 OOV 标记
+            # 将 OOV 标记转换为小写以保持一致性
             OOV_token = OOV_token.lower()
-            if OOV_words:
-                OOV_words = [w.lower() for w in OOV_words]
+            if OOV_words:  # 如果存在 OOV 词汇列表
+                OOV_words = [w.lower() for w in OOV_words]  # 将所有 OOV 词汇转换为小写
 
         return OOV_token, OOV_words
 
     def _get_attribute_vocabulary(self, attribute: Text) -> Optional[Dict[Text, int]]:
-        """Gets trained vocabulary from attribute's count vectorizer."""
+        """从指定属性的计数向量化器获取训练好的词汇表。
+        
+        该方法尝试从已训练的向量化器中提取词汇表，用于后续的 OOV 词汇处理。
+        如果向量化器未训练或不存在，则返回 None。
+        
+        Args:
+            attribute: 消息属性名称（如 TEXT、INTENT 等）
+            
+        Returns:
+            词汇表字典（词汇到索引的映射）或 None（如果未训练）
+        """
         try:
-            return self.vectorizers[attribute].vocabulary_
-        except (AttributeError, TypeError, KeyError):
+            return self.vectorizers[attribute].vocabulary_  # 返回训练好的词汇表字典
+        except (AttributeError, TypeError, KeyError):  # 捕获可能的异常（向量化器不存在、未训练等）
             return None
 
     def _check_analyzer(self) -> None:
-        if self.analyzer != "word":
-            if self.OOV_token is not None:
+        """检查分析器配置并发出相应的警告信息。
+        
+        当分析器设置为字符级别时，某些参数（如 OOV 标记、停用词）可能被忽略。
+        该方法会检查配置的一致性并发出警告，帮助用户了解哪些参数可能无效。
+        """
+        if self.analyzer != "word":  # 如果分析器不是词级别（即字符级别）
+            if self.OOV_token is not None:  # 如果设置了 OOV 标记
                 logger.warning(
                     "Analyzer is set to character, "
                     "provided OOV word token will be ignored."
                 )
-            if self.stop_words is not None:
+            if self.stop_words is not None:  # 如果设置了停用词
                 logger.warning(
                     "Analyzer is set to character, "
                     "provided stop words will be ignored."
                 )
-            if self.max_ngram == 1:
+            if self.max_ngram == 1:  # 如果最大 n-gram 为 1
                 logger.warning(
                     "Analyzer is set to character, "
                     "but max n-gram is set to 1. "
@@ -182,8 +230,18 @@ class CountVectorsFeaturizer(SparseFeaturizer, GraphComponent):
 
     @staticmethod
     def _attributes_for(analyzer: Text) -> List[Text]:
-        """Create a list of attributes that should be featurized."""
-        # intents should be featurized only by word level count vectorizer
+        """根据分析器类型确定应该进行特征化的属性列表。
+        
+        该方法根据分析器的类型（词级别或字符级别）返回相应的属性列表。
+        词级别分析器可以处理所有消息属性，而字符级别分析器只能处理密集特征化的属性。
+        
+        Args:
+            analyzer: 分析器类型（'word' 或 'char_wb'）
+            
+        Returns:
+            应该进行特征化的属性列表
+        """
+        # 意图属性只能由词级别的计数向量化器进行特征化
         return (
             MESSAGE_ATTRIBUTES if analyzer == "word" else DENSE_FEATURIZABLE_ATTRIBUTES
         )
@@ -198,31 +256,46 @@ class CountVectorsFeaturizer(SparseFeaturizer, GraphComponent):
         oov_token: Optional[Text] = None,
         oov_words: Optional[List[Text]] = None,
     ) -> None:
-        """Constructs a new count vectorizer using the sklearn framework."""
-        super().__init__(execution_context.node_name, config)
+        """使用 sklearn 框架构造新的计数向量化器。
+        
+        该构造函数初始化 CountVectorsFeaturizer 实例，加载配置参数，
+        设置词汇表外词汇处理，并准备向量化器实例。
+        
+        Args:
+            config: 组件配置字典
+            model_storage: 模型存储接口
+            resource: 资源管理对象
+            execution_context: 执行上下文，包含节点名称和执行模式信息
+            vectorizers: 可选的预训练向量化器字典
+            oov_token: 可选的 OOV 标记
+            oov_words: 可选的 OOV 词汇列表
+        """
+        super().__init__(execution_context.node_name, config)  # 调用父类构造函数
 
+        # 存储模型存储和资源管理对象
         self._model_storage = model_storage
         self._resource = resource
 
-        # parameters for sklearn's CountVectorizer
+        # 加载 sklearn CountVectorizer 相关参数
         self._load_count_vect_params()
 
-        # handling Out-Of-Vocabulary (OOV) words
-        if oov_token and oov_words:
+        # 处理词汇表外（OOV）词汇
+        if oov_token and oov_words:  # 如果提供了 OOV 参数
             self.OOV_token = oov_token
             self.OOV_words = oov_words
-        else:
+        else:  # 否则从配置中加载
             self.OOV_token, self.OOV_words = self._load_vocabulary_params()
 
-        # warn that some of config parameters might be ignored
+        # 检查分析器配置并发出警告（某些参数可能被忽略）
         self._check_analyzer()
 
-        # set which attributes to featurize
+        # 设置应该进行特征化的属性列表
         self._attributes = self._attributes_for(self.analyzer)
 
-        # declare class instance for CountVectorizer
+        # 声明 CountVectorizer 实例字典
         self.vectorizers = vectorizers or {}
 
+        # 设置微调模式标志
         self.finetune_mode = execution_context.is_finetuning
 
     @classmethod
@@ -233,31 +306,65 @@ class CountVectorsFeaturizer(SparseFeaturizer, GraphComponent):
         resource: Resource,
         execution_context: ExecutionContext,
     ) -> CountVectorsFeaturizer:
-        """Creates a new untrained component (see parent class for full docstring)."""
+        """创建新的未训练组件实例。
+        
+        这是一个类方法，用于创建新的 CountVectorsFeaturizer 实例。
+        通常在训练开始时调用，创建一个全新的、未训练的组件。
+        
+        Args:
+            config: 组件配置字典
+            model_storage: 模型存储接口
+            resource: 资源管理对象
+            execution_context: 执行上下文
+            
+        Returns:
+            新的未训练的 CountVectorsFeaturizer 实例
+        """
         return cls(config, model_storage, resource, execution_context)
 
     def _get_message_tokens_by_attribute(
         self, message: "Message", attribute: Text
     ) -> List[Text]:
-        """Get text tokens of an attribute of a message."""
-        if message.get(TOKENS_NAMES[attribute]):
+        """从消息的指定属性中获取文本标记。
+        
+        该方法从消息对象中提取指定属性的标记，并根据配置决定是否使用词元形式。
+        
+        Args:
+            message: 消息对象
+            attribute: 属性名称（如 TEXT、INTENT 等）
+            
+        Returns:
+            标记文本列表，如果属性不存在则返回空列表
+        """
+        if message.get(TOKENS_NAMES[attribute]):  # 如果属性存在标记
             return [
-                t.lemma if self.use_lemma else t.text
+                t.lemma if self.use_lemma else t.text  # 根据配置选择词元或原始文本
                 for t in message.get(TOKENS_NAMES[attribute])
             ]
         else:
-            return []
+            return []  # 属性不存在时返回空列表
 
     def _process_tokens(self, tokens: List[Text], attribute: Text = TEXT) -> List[Text]:
-        """Apply processing and cleaning steps to text."""
+        """对标记应用处理和清理步骤。
+        
+        该方法对输入的标记进行预处理，包括数字替换、小写转换等。
+        对于意图、动作名称等属性，不进行任何处理，保持原始形式。
+        
+        Args:
+            tokens: 输入标记列表
+            attribute: 属性名称，默认为 TEXT
+            
+        Returns:
+            处理后的标记列表
+        """
         if attribute in [INTENT, ACTION_NAME, INTENT_RESPONSE_KEY]:
-            # Don't do any processing for intent attribute. Treat them as whole labels
+            # 对意图属性不进行任何处理，将它们视为完整的标签
             return tokens
 
-        # replace all digits with NUMBER token
+        # 将所有数字替换为 NUMBER 标记，用于数字标准化
         tokens = [re.sub(r"\b[0-9]+\b", "__NUMBER__", text) for text in tokens]
 
-        # convert to lowercase if necessary
+        # 如果需要，转换为小写
         if self.lowercase:
             tokens = [text.lower() for text in tokens]
 
@@ -266,18 +373,29 @@ class CountVectorsFeaturizer(SparseFeaturizer, GraphComponent):
     def _replace_with_oov_token(
         self, tokens: List[Text], attribute: Text
     ) -> List[Text]:
-        """Replace OOV words with OOV token."""
-        if self.OOV_token and self.analyzer == "word":
+        """将词汇表外（OOV）词汇替换为 OOV 标记。
+        
+        该方法处理训练时未见过但在预测时可能出现的词汇，将它们替换为预定义的 OOV 标记。
+        这有助于提高模型对未知词汇的鲁棒性。
+        
+        Args:
+            tokens: 输入标记列表
+            attribute: 属性名称
+            
+        Returns:
+            替换 OOV 词汇后的标记列表
+        """
+        if self.OOV_token and self.analyzer == "word":  # 如果设置了 OOV 标记且使用词级别分析器
             attribute_vocab = self._get_attribute_vocabulary(attribute)
             if attribute_vocab is not None and self.OOV_token in attribute_vocab:
-                # CountVectorizer is trained, process for prediction
+                # 向量化器已训练，进行预测时的处理
                 attribute_vocabulary_tokens = set(attribute_vocab.keys())
                 tokens = [
                     t if t in attribute_vocabulary_tokens else self.OOV_token
                     for t in tokens
                 ]
             elif self.OOV_words:
-                # CountVectorizer is not trained, process for train
+                # 向量化器未训练，进行训练时的处理
                 tokens = [self.OOV_token if t in self.OOV_words else t for t in tokens]
 
         return tokens
@@ -285,15 +403,25 @@ class CountVectorsFeaturizer(SparseFeaturizer, GraphComponent):
     def _get_processed_message_tokens_by_attribute(
         self, message: Message, attribute: Text = TEXT
     ) -> List[Text]:
-        """Get processed text of attribute of a message."""
+        """获取消息指定属性的处理后文本标记。
+        
+        该方法从消息中提取指定属性的标记，并应用完整的预处理流程，
+        包括标记提取、文本处理、OOV 词汇替换等步骤。
+        
+        Args:
+            message: 消息对象
+            attribute: 属性名称，默认为 TEXT
+            
+        Returns:
+            完全处理后的标记列表
+        """
         if message.get(attribute) is None:
-            # return empty list since sklearn countvectorizer does not like None
-            # object while training and predicting
+            # 如果属性不存在，返回空列表，因为 sklearn countvectorizer 不喜欢 None 对象
             return []
 
-        tokens = self._get_message_tokens_by_attribute(message, attribute)
-        tokens = self._process_tokens(tokens, attribute)
-        tokens = self._replace_with_oov_token(tokens, attribute)
+        tokens = self._get_message_tokens_by_attribute(message, attribute)  # 获取原始标记
+        tokens = self._process_tokens(tokens, attribute)  # 应用文本处理
+        tokens = self._replace_with_oov_token(tokens, attribute)  # 替换 OOV 词汇
 
         return tokens
 
