@@ -34,24 +34,46 @@ from rasa.shared.exceptions import (
 )
 import rasa.shared.utils.validation
 
-DEFAULT_ENCODING = "utf-8"
-YAML_VERSION = (1, 2)
+# =============================================================================
+# 文件 IO 操作模块 - 提供文件读写、YAML/JSON 处理、目录操作等功能
+# =============================================================================
 
+DEFAULT_ENCODING = "utf-8"  # 默认文件编码
+YAML_VERSION = (1, 2)  # 支持的 YAML 版本
+
+
+# =============================================================================
+# 颜色输出相关类
+# =============================================================================
 
 class bcolors:
-    HEADER = "\033[95m"
-    OKBLUE = "\033[94m"
-    OKGREEN = "\033[92m"
-    WARNING = "\033[93m"
-    FAIL = "\033[91m"
-    ENDC = "\033[0m"
-    BOLD = "\033[1m"
-    UNDERLINE = "\033[4m"
+    """ANSI 颜色代码常量类，用于终端彩色输出。"""
+    HEADER = "\033[95m"      # 紫色标题
+    OKBLUE = "\033[94m"      # 蓝色（信息）
+    OKGREEN = "\033[92m"     # 绿色（成功）
+    WARNING = "\033[93m"     # 黄色（警告）
+    FAIL = "\033[91m"        # 红色（错误）
+    ENDC = "\033[0m"         # 结束颜色
+    BOLD = "\033[1m"         # 粗体
+    UNDERLINE = "\033[4m"    # 下划线
 
 
 def wrap_with_color(*args: Any, color: Text) -> Text:
+    """用指定颜色包装文本。
+    
+    Args:
+        *args: 要包装的文本参数
+        color: 颜色代码
+
+    Returns:
+        带颜色代码的文本字符串
+    """
     return color + " ".join(str(s) for s in args) + bcolors.ENDC
 
+
+# =============================================================================
+# 警告和日志相关函数
+# =============================================================================
 
 def raise_warning(
     message: Text,
@@ -59,7 +81,14 @@ def raise_warning(
     docs: Optional[Text] = None,
     **kwargs: Any,
 ) -> None:
-    """Emit a `warnings.warn` with sensible defaults and a colored warning msg."""
+    """发出带有合理默认值和彩色警告消息的 `warnings.warn`。
+    
+    Args:
+        message: 警告消息
+        category: 警告类别
+        docs: 相关文档链接
+        **kwargs: 其他警告参数
+    """
     original_formatter = warnings.formatwarning
 
     def should_show_source_line() -> bool:
@@ -77,10 +106,10 @@ def raise_warning(
         lineno: int,
         line: Optional[Text] = None,
     ) -> Text:
-        """Function to format a warning the standard way."""
+        """以标准方式格式化警告的函数。"""
         if not should_show_source_line():
             if docs:
-                line = f"More info at {docs}"
+                line = f"更多信息请访问 {docs}"
             else:
                 line = ""
 
@@ -90,7 +119,7 @@ def raise_warning(
         return wrap_with_color(formatted_message, color=bcolors.WARNING)
 
     if "stacklevel" not in kwargs:
-        # try to set useful defaults for the most common warning categories
+        # 为最常见的警告类别设置有用的默认值
         if category == DeprecationWarning:
             kwargs["stacklevel"] = 3
         elif category in (UserWarning, FutureWarning):
@@ -101,20 +130,23 @@ def raise_warning(
     warnings.formatwarning = original_formatter
 
 
+# =============================================================================
+# 基础文件操作函数
+# =============================================================================
+
 def write_text_file(
     content: Text,
     file_path: Union[Text, Path],
     encoding: Text = DEFAULT_ENCODING,
     append: bool = False,
 ) -> None:
-    """Writes text to a file.
+    """将文本写入文件。
 
     Args:
-        content: The content to write.
-        file_path: The path to which the content should be written.
-        encoding: The encoding which should be used.
-        append: Whether to append to the file or to truncate the file.
-
+        content: 要写入的内容
+        file_path: 内容应写入的路径
+        encoding: 应使用的编码
+        append: 是否追加到文件或截断文件
     """
     mode = "a" if append else "w"
     with open(file_path, mode, encoding=encoding) as file:
@@ -122,43 +154,76 @@ def write_text_file(
 
 
 def read_file(filename: Union[Text, Path], encoding: Text = DEFAULT_ENCODING) -> Any:
-    """Read text from a file."""
+    """从文件读取文本。
+    
+    Args:
+        filename: 要读取的文件路径
+        encoding: 文件编码
+        
+    Returns:
+        文件内容
+        
+    Raises:
+        FileNotFoundException: 文件不存在时
+        FileIOException: 文件读取错误时
+    """
     try:
         with open(filename, encoding=encoding) as f:
             return f.read()
     except FileNotFoundError:
         raise FileNotFoundException(
-            f"Failed to read file, " f"'{os.path.abspath(filename)}' does not exist."
+            f"读取文件失败，'{os.path.abspath(filename)}' 不存在。"
         )
     except UnicodeDecodeError:
         raise FileIOException(
-            f"Failed to read file '{os.path.abspath(filename)}', "
-            f"could not read the file using {encoding} to decode "
-            f"it. Please make sure the file is stored with this "
-            f"encoding."
+            f"读取文件 '{os.path.abspath(filename)}' 失败，"
+            f"无法使用 {encoding} 编码解码文件。请确保文件使用此编码存储。"
         )
 
 
 def read_json_file(filename: Union[Text, Path]) -> Any:
-    """Read json from a file."""
+    """从文件读取 JSON 数据。
+    
+    Args:
+        filename: JSON 文件路径
+        
+    Returns:
+        解析后的 JSON 数据
+        
+    Raises:
+        FileIOException: JSON 解析错误时
+    """
     content = read_file(filename)
     try:
         return json.loads(content)
     except ValueError as e:
         raise FileIOException(
-            f"Failed to read json from '{os.path.abspath(filename)}'. Error: {e}"
+            f"从 '{os.path.abspath(filename)}' 读取 JSON 失败。错误: {e}"
         )
 
 
-def list_directory(path: Text) -> List[Text]:
-    """Returns all files and folders excluding hidden files.
+# =============================================================================
+# 目录操作函数
+# =============================================================================
 
-    If the path points to a file, returns the file. This is a recursive
-    implementation returning files in any depth of the path.
+def list_directory(path: Text) -> List[Text]:
+    """返回所有文件和文件夹，排除隐藏文件。
+
+    如果路径指向文件，则返回该文件。这是一个递归实现，
+    返回路径中任何深度的文件。
+    
+    Args:
+        path: 要列出的路径
+        
+    Returns:
+        文件和目录路径列表
+        
+    Raises:
+        ValueError: 路径类型错误或资源不存在时
     """
     if not isinstance(path, str):
         raise ValueError(
-            f"`resource_name` must be a string type. " f"Got `{type(path)}` instead"
+            f"`resource_name` 必须是字符串类型。得到 `{type(path)}` 而不是字符串"
         )
 
     if os.path.isfile(path):
@@ -166,56 +231,78 @@ def list_directory(path: Text) -> List[Text]:
     elif os.path.isdir(path):
         results: List[Text] = []
         for base, dirs, files in os.walk(path, followlinks=True):
-            # sort files for same order across runs
+            # 对文件进行排序，确保跨运行的一致性顺序
             files = sorted(files, key=_filename_without_prefix)
-            # add not hidden files
+            # 添加非隐藏文件
             good_files = filter(lambda x: not x.startswith("."), files)
             results.extend(os.path.join(base, f) for f in good_files)
-            # add not hidden directories
+            # 添加非隐藏目录
             good_directories = filter(lambda x: not x.startswith("."), dirs)
             results.extend(os.path.join(base, f) for f in good_directories)
         return results
     else:
-        raise ValueError(f"Could not locate the resource '{os.path.abspath(path)}'.")
+        raise ValueError(f"无法定位资源 '{os.path.abspath(path)}'。")
 
 
 def list_files(path: Text) -> List[Text]:
-    """Returns all files excluding hidden files.
+    """返回所有文件，排除隐藏文件。
 
-    If the path points to a file, returns the file.
+    如果路径指向文件，则返回该文件。
+    
+    Args:
+        path: 要列出的路径
+        
+    Returns:
+        文件路径列表
     """
     return [fn for fn in list_directory(path) if os.path.isfile(fn)]
 
 
 def _filename_without_prefix(file: Text) -> Text:
-    """Splits of a filenames prefix until after the first ``_``."""
+    """分割文件名的前缀，直到第一个 ``_`` 之后。
+    
+    Args:
+        file: 文件名
+        
+    Returns:
+        去除前缀后的文件名
+    """
     return "_".join(file.split("_")[1:])
 
 
 def list_subdirectories(path: Text) -> List[Text]:
-    """Returns all folders excluding hidden files.
+    """返回所有文件夹，排除隐藏文件。
 
-    If the path points to a file, returns an empty list.
+    如果路径指向文件，则返回空列表。
+    
+    Args:
+        path: 要列出的路径
+        
+    Returns:
+        子目录路径列表
     """
     return [fn for fn in glob.glob(os.path.join(path, "*")) if os.path.isdir(fn)]
 
 
+# =============================================================================
+# 哈希和指纹计算函数
+# =============================================================================
+
 def deep_container_fingerprint(
     obj: Union[List[Any], Dict[Any, Any], Any], encoding: Text = DEFAULT_ENCODING
 ) -> Text:
-    """Calculate a hash which is stable.
+    """计算稳定的哈希值。
 
-    Works for lists and dictionaries. For keys and values, we recursively call
-    `hash(...)` on them. In case of a dict, the hash is independent of the containers
-    key order. Keep in mind that a list with items in a different order
-    will not create the same hash!
+    适用于列表和字典。对于键和值，我们递归调用 `hash(...)`。
+    对于字典，哈希值与容器的键顺序无关。请记住，
+    不同顺序的列表不会创建相同的哈希！
 
     Args:
-        obj: dictionary or list to be hashed.
-        encoding: encoding used for dumping objects as strings
+        obj: 要哈希的字典或列表
+        encoding: 用于将对象转储为字符串的编码
 
     Returns:
-        hash of the container.
+        容器的哈希值
     """
     if isinstance(obj, dict):
         return get_dictionary_fingerprint(obj, encoding)
@@ -230,17 +317,17 @@ def deep_container_fingerprint(
 def get_dictionary_fingerprint(
     dictionary: Dict[Any, Any], encoding: Text = DEFAULT_ENCODING
 ) -> Text:
-    """Calculate the fingerprint for a dictionary.
+    """计算字典的指纹。
 
-    The dictionary can contain any keys and values which are either a dict,
-    a list or a elements which can be dumped as a string.
+    字典可以包含任何键和值，这些键和值可以是字典、
+    列表或可以转储为字符串的元素。
 
     Args:
-        dictionary: dictionary to be hashed
-        encoding: encoding used for dumping objects as strings
+        dictionary: 要哈希的字典
+        encoding: 用于将对象转储为字符串的编码
 
     Returns:
-        The hash of the dictionary
+        字典的哈希值
     """
     stringified = json.dumps(
         {
@@ -257,14 +344,14 @@ def get_dictionary_fingerprint(
 def get_list_fingerprint(
     elements: List[Any], encoding: Text = DEFAULT_ENCODING
 ) -> Text:
-    """Calculate a fingerprint for an unordered list.
+    """计算无序列表的指纹。
 
     Args:
-        elements: unordered list
-        encoding: encoding used for dumping objects as strings
+        elements: 无序列表
+        encoding: 用于将对象转储为字符串的编码
 
     Returns:
-        the fingerprint of the list
+        列表的指纹
     """
     stringified = json.dumps(
         [deep_container_fingerprint(element, encoding) for element in elements]
@@ -273,7 +360,15 @@ def get_list_fingerprint(
 
 
 def get_text_hash(text: Text, encoding: Text = DEFAULT_ENCODING) -> Text:
-    """Calculate the md5 hash for a text."""
+    """计算文本的 md5 哈希值。
+    
+    Args:
+        text: 要哈希的文本
+        encoding: 文本编码
+        
+    Returns:
+        文本的 MD5 哈希值
+    """
     return md5(text.encode(encoding)).hexdigest()  # nosec
 
 

@@ -6,17 +6,20 @@ from rasa.shared.nlu.constants import (
     ENTITY_ATTRIBUTE_END,
 )
 
+# =============================================================================
+# 同义词解析模块 - 提供实体同义词的解析和管理功能
+# =============================================================================
+
 
 def add_synonyms_from_entities(
     plain_text: Text, entities: List[Dict], existing_synonyms: Dict[Text, Any]
 ) -> None:
-    """Adds synonyms found in intent examples.
+    """从意图示例中添加发现的同义词。
 
     Args:
-        plain_text: Plain (with removed special symbols) user utterance.
-        entities: Entities that were extracted from the original user utterance.
-        existing_synonyms: The dict with existing synonyms mappings that will
-                           be extended.
+        plain_text: 纯文本（已移除特殊符号）用户话语
+        entities: 从原始用户话语中提取的实体
+        existing_synonyms: 将扩展的现有同义词映射字典
     """
     for e in entities:
         e_text = plain_text[e[ENTITY_ATTRIBUTE_START] : e[ENTITY_ATTRIBUTE_END]]
@@ -27,16 +30,16 @@ def add_synonyms_from_entities(
 def add_synonym(
     synonym_value: Text, synonym_name: Text, existing_synonyms: Dict[Text, Any]
 ) -> None:
-    """Adds a new synonym mapping to the provided list of synonyms.
+    """向提供的同义词列表添加新的同义词映射。
 
     Args:
-        synonym_value: Value of the synonym.
-        synonym_name: Name of the synonym.
-        existing_synonyms: Dictionary will synonym mappings that will be extended.
+        synonym_value: 同义词的值
+        synonym_name: 同义词的名称
+        existing_synonyms: 将被扩展的同义词映射字典
     """
     import rasa.shared.nlu.training_data.util as training_data_util
 
     training_data_util.check_duplicate_synonym(
-        existing_synonyms, synonym_value, synonym_name, "reading markdown"
+        existing_synonyms, synonym_value, synonym_name, "读取 markdown"
     )
     existing_synonyms[synonym_value] = synonym_name

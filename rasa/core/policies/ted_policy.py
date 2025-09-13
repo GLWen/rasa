@@ -1,352 +1,386 @@
+# 未来注解支持
 from __future__ import annotations
 
-import logging
-from pathlib import Path
-from collections import defaultdict
-import contextlib
-from typing import Any, List, Optional, Text, Dict, Tuple, Union, Type
+# 标准库导入
+import logging  # 日志记录
+from pathlib import Path  # 路径处理
+from collections import defaultdict  # 默认字典
+import contextlib  # 上下文管理
+from typing import Any, List, Optional, Text, Dict, Tuple, Union, Type  # 类型提示
 
-import numpy as np
-import tensorflow as tf
+# 第三方库导入
+import numpy as np  # 数值计算
+import tensorflow as tf  # 深度学习框架
 
-from rasa.engine.recipes.default_recipe import DefaultV1Recipe
-from rasa.engine.graph import ExecutionContext
-from rasa.engine.storage.resource import Resource
-from rasa.engine.storage.storage import ModelStorage
-from rasa.exceptions import ModelNotFound
-from rasa.nlu.constants import TOKENS_NAMES
-from rasa.nlu.extractors.extractor import EntityTagSpec, EntityExtractorMixin
-import rasa.core.actions.action
-from rasa.core.featurizers.precomputation import MessageContainerForCoreFeaturization
-from rasa.core.featurizers.tracker_featurizers import TrackerFeaturizer
-from rasa.core.featurizers.tracker_featurizers import MaxHistoryTrackerFeaturizer
-from rasa.shared.exceptions import RasaException
+# Rasa 引擎相关导入
+from rasa.engine.recipes.default_recipe import DefaultV1Recipe  # 默认配方
+from rasa.engine.graph import ExecutionContext  # 执行上下文
+from rasa.engine.storage.resource import Resource  # 资源
+from rasa.engine.storage.storage import ModelStorage  # 模型存储
+
+# Rasa 异常导入
+from rasa.exceptions import ModelNotFound  # 模型未找到异常
+
+# NLU 相关导入
+from rasa.nlu.constants import TOKENS_NAMES  # 令牌名称常量
+from rasa.nlu.extractors.extractor import EntityTagSpec, EntityExtractorMixin  # 实体提取器
+
+# 核心动作导入
+import rasa.core.actions.action  # 核心动作模块
+
+# 特征化器导入
+from rasa.core.featurizers.precomputation import MessageContainerForCoreFeaturization  # 消息容器
+from rasa.core.featurizers.tracker_featurizers import TrackerFeaturizer  # 跟踪器特征化器
+from rasa.core.featurizers.tracker_featurizers import MaxHistoryTrackerFeaturizer  # 最大历史特征化器
+
+# 共享异常导入
+from rasa.shared.exceptions import RasaException  # Rasa基础异常
+
+# NLU 常量导入
 from rasa.shared.nlu.constants import (
-    ACTION_TEXT,
-    ACTION_NAME,
-    INTENT,
-    TEXT,
-    ENTITIES,
-    FEATURE_TYPE_SENTENCE,
-    ENTITY_ATTRIBUTE_TYPE,
-    ENTITY_TAGS,
-    EXTRACTOR,
-    SPLIT_ENTITIES_BY_COMMA,
-    SPLIT_ENTITIES_BY_COMMA_DEFAULT_VALUE,
-)
-from rasa.core.policies.policy import PolicyPrediction, Policy, SupportedData
-from rasa.core.constants import (
-    DIALOGUE,
-    POLICY_MAX_HISTORY,
-    DEFAULT_MAX_HISTORY,
-    DEFAULT_POLICY_PRIORITY,
-    POLICY_PRIORITY,
-)
-from rasa.shared.constants import DIAGNOSTIC_DATA
-from rasa.shared.core.constants import ACTIVE_LOOP, SLOTS, ACTION_LISTEN_NAME
-from rasa.shared.core.trackers import DialogueStateTracker
-from rasa.shared.core.generator import TrackerWithCachedStates
-from rasa.shared.core.events import EntitiesAdded, Event
-from rasa.shared.core.domain import Domain
-from rasa.shared.nlu.training_data.message import Message
-from rasa.shared.nlu.training_data.features import (
-    Features,
-    save_features,
-    load_features,
-)
-import rasa.shared.utils.io
-import rasa.utils.io
-from rasa.utils import train_utils
-from rasa.utils.tensorflow.feature_array import (
-    FeatureArray,
-    serialize_nested_feature_arrays,
-    deserialize_nested_feature_arrays,
-)
-from rasa.utils.tensorflow.models import RasaModel, TransformerRasaModel
-from rasa.utils.tensorflow import rasa_layers
-from rasa.utils.tensorflow.model_data import RasaModelData, FeatureSignature, Data
-from rasa.utils.tensorflow.model_data_utils import convert_to_data_format
-from rasa.utils.tensorflow.constants import (
-    LABEL,
-    IDS,
-    TRANSFORMER_SIZE,
-    NUM_TRANSFORMER_LAYERS,
-    NUM_HEADS,
-    BATCH_SIZES,
-    BATCH_STRATEGY,
-    EPOCHS,
-    RANDOM_SEED,
-    LEARNING_RATE,
-    RANKING_LENGTH,
-    RENORMALIZE_CONFIDENCES,
-    LOSS_TYPE,
-    SIMILARITY_TYPE,
-    NUM_NEG,
-    EVAL_NUM_EXAMPLES,
-    EVAL_NUM_EPOCHS,
-    NEGATIVE_MARGIN_SCALE,
-    REGULARIZATION_CONSTANT,
-    SCALE_LOSS,
-    USE_MAX_NEG_SIM,
-    MAX_NEG_SIM,
-    MAX_POS_SIM,
-    EMBEDDING_DIMENSION,
-    DROP_RATE_DIALOGUE,
-    DROP_RATE_LABEL,
-    DROP_RATE,
-    DROP_RATE_ATTENTION,
-    CONNECTION_DENSITY,
-    KEY_RELATIVE_ATTENTION,
-    VALUE_RELATIVE_ATTENTION,
-    MAX_RELATIVE_POSITION,
-    CROSS_ENTROPY,
-    AUTO,
-    BALANCED,
-    TENSORBOARD_LOG_DIR,
-    TENSORBOARD_LOG_LEVEL,
-    CHECKPOINT_MODEL,
-    ENCODING_DIMENSION,
-    UNIDIRECTIONAL_ENCODER,
-    SEQUENCE,
-    SENTENCE,
-    SEQUENCE_LENGTH,
-    DENSE_DIMENSION,
-    CONCAT_DIMENSION,
-    SPARSE_INPUT_DROPOUT,
-    DENSE_INPUT_DROPOUT,
-    MASKED_LM,
-    MASK,
-    HIDDEN_LAYERS_SIZES,
-    FEATURIZERS,
-    ENTITY_RECOGNITION,
-    CONSTRAIN_SIMILARITIES,
-    MODEL_CONFIDENCE,
-    SOFTMAX,
-    BILOU_FLAG,
-    EPOCH_OVERRIDE,
-    USE_GPU,
+    ACTION_TEXT,  # 动作文本
+    ACTION_NAME,  # 动作名称
+    INTENT,  # 意图
+    TEXT,  # 文本
+    ENTITIES,  # 实体
+    FEATURE_TYPE_SENTENCE,  # 句子特征类型
+    ENTITY_ATTRIBUTE_TYPE,  # 实体属性类型
+    ENTITY_TAGS,  # 实体标签
+    EXTRACTOR,  # 提取器
+    SPLIT_ENTITIES_BY_COMMA,  # 按逗号分割实体
+    SPLIT_ENTITIES_BY_COMMA_DEFAULT_VALUE,  # 按逗号分割实体默认值
 )
 
+# 策略相关导入
+from rasa.core.policies.policy import PolicyPrediction, Policy, SupportedData  # 策略基类
+from rasa.core.constants import (
+    DIALOGUE,  # 对话
+    POLICY_MAX_HISTORY,  # 策略最大历史
+    DEFAULT_MAX_HISTORY,  # 默认最大历史
+    DEFAULT_POLICY_PRIORITY,  # 默认策略优先级
+    POLICY_PRIORITY,  # 策略优先级
+)
+
+# 共享常量导入
+from rasa.shared.constants import DIAGNOSTIC_DATA  # 诊断数据
+
+# 核心常量导入
+from rasa.shared.core.constants import ACTIVE_LOOP, SLOTS, ACTION_LISTEN_NAME  # 活跃循环、槽位、监听动作
+
+# 跟踪器相关导入
+from rasa.shared.core.trackers import DialogueStateTracker  # 对话状态跟踪器
+from rasa.shared.core.generator import TrackerWithCachedStates  # 带缓存状态的跟踪器
+
+# 事件相关导入
+from rasa.shared.core.events import EntitiesAdded, Event  # 实体添加事件
+
+# 域相关导入
+from rasa.shared.core.domain import Domain  # 对话域
+
+# 训练数据相关导入
+from rasa.shared.nlu.training_data.message import Message  # 消息类
+from rasa.shared.nlu.training_data.features import (
+    Features,  # 特征类
+    save_features,  # 保存特征
+    load_features,  # 加载特征
+)
+
+# 工具模块导入
+import rasa.shared.utils.io  # 共享IO工具
+import rasa.utils.io  # IO工具
+from rasa.utils import train_utils  # 训练工具
+
+# TensorFlow 特征数组导入
+from rasa.utils.tensorflow.feature_array import (
+    FeatureArray,  # 特征数组
+    serialize_nested_feature_arrays,  # 序列化嵌套特征数组
+    deserialize_nested_feature_arrays,  # 反序列化嵌套特征数组
+)
+
+# TensorFlow 模型导入
+from rasa.utils.tensorflow.models import RasaModel, TransformerRasaModel  # Rasa模型和Transformer模型
+from rasa.utils.tensorflow import rasa_layers  # Rasa层
+
+# 模型数据导入
+from rasa.utils.tensorflow.model_data import RasaModelData, FeatureSignature, Data  # 模型数据
+from rasa.utils.tensorflow.model_data_utils import convert_to_data_format  # 数据格式转换
+
+# TensorFlow 常量导入
+from rasa.utils.tensorflow.constants import (
+    LABEL,  # 标签
+    IDS,  # ID
+    TRANSFORMER_SIZE,  # Transformer大小
+    NUM_TRANSFORMER_LAYERS,  # Transformer层数
+    NUM_HEADS,  # 注意力头数
+    BATCH_SIZES,  # 批次大小
+    BATCH_STRATEGY,  # 批次策略
+    EPOCHS,  # 训练轮数
+    RANDOM_SEED,  # 随机种子
+    LEARNING_RATE,  # 学习率
+    RANKING_LENGTH,  # 排序长度
+    RENORMALIZE_CONFIDENCES,  # 重新归一化置信度
+    LOSS_TYPE,  # 损失类型
+    SIMILARITY_TYPE,  # 相似度类型
+    NUM_NEG,  # 负样本数量
+    EVAL_NUM_EXAMPLES,  # 评估样本数量
+    EVAL_NUM_EPOCHS,  # 评估轮数
+    NEGATIVE_MARGIN_SCALE,  # 负边距缩放
+    REGULARIZATION_CONSTANT,  # 正则化常数
+    SCALE_LOSS,  # 损失缩放
+    USE_MAX_NEG_SIM,  # 使用最大负相似度
+    MAX_NEG_SIM,  # 最大负相似度
+    MAX_POS_SIM,  # 最大正相似度
+    EMBEDDING_DIMENSION,  # 嵌入维度
+    DROP_RATE_DIALOGUE,  # 对话丢弃率
+    DROP_RATE_LABEL,  # 标签丢弃率
+    DROP_RATE,  # 丢弃率
+    DROP_RATE_ATTENTION,  # 注意力丢弃率
+    CONNECTION_DENSITY,  # 连接密度
+    KEY_RELATIVE_ATTENTION,  # 键相对注意力
+    VALUE_RELATIVE_ATTENTION,  # 值相对注意力
+    MAX_RELATIVE_POSITION,  # 最大相对位置
+    CROSS_ENTROPY,  # 交叉熵
+    AUTO,  # 自动
+    BALANCED,  # 平衡
+    TENSORBOARD_LOG_DIR,  # TensorBoard日志目录
+    TENSORBOARD_LOG_LEVEL,  # TensorBoard日志级别
+    CHECKPOINT_MODEL,  # 检查点模型
+    ENCODING_DIMENSION,  # 编码维度
+    UNIDIRECTIONAL_ENCODER,  # 单向编码器
+    SEQUENCE,  # 序列
+    SENTENCE,  # 句子
+    SEQUENCE_LENGTH,  # 序列长度
+    DENSE_DIMENSION,  # 密集维度
+    CONCAT_DIMENSION,  # 连接维度
+    SPARSE_INPUT_DROPOUT,  # 稀疏输入丢弃
+    DENSE_INPUT_DROPOUT,  # 密集输入丢弃
+    MASKED_LM,  # 掩码语言模型
+    MASK,  # 掩码
+    HIDDEN_LAYERS_SIZES,  # 隐藏层大小
+    FEATURIZERS,  # 特征化器
+    ENTITY_RECOGNITION,  # 实体识别
+    CONSTRAIN_SIMILARITIES,  # 约束相似度
+    MODEL_CONFIDENCE,  # 模型置信度
+    SOFTMAX,  # Softmax
+    BILOU_FLAG,  # BILOU标志
+    EPOCH_OVERRIDE,  # 轮数覆盖
+    USE_GPU,  # 使用GPU
+)
+
+# 日志记录器
 logger = logging.getLogger(__name__)
 
-E2E_CONFIDENCE_THRESHOLD = "e2e_confidence_threshold"
-LABEL_KEY = LABEL
-LABEL_SUB_KEY = IDS
-LENGTH = "length"
-INDICES = "indices"
-SENTENCE_FEATURES_TO_ENCODE = [INTENT, TEXT, ACTION_NAME, ACTION_TEXT]
-SEQUENCE_FEATURES_TO_ENCODE = [TEXT, ACTION_TEXT, f"{LABEL}_{ACTION_TEXT}"]
+# 常量定义
+E2E_CONFIDENCE_THRESHOLD = "e2e_confidence_threshold"  # 端到端置信度阈值
+LABEL_KEY = LABEL  # 标签键
+LABEL_SUB_KEY = IDS  # 标签子键
+LENGTH = "length"  # 长度
+INDICES = "indices"  # 索引
+
+# 需要编码的句子特征
+SENTENCE_FEATURES_TO_ENCODE = [INTENT, TEXT, ACTION_NAME, ACTION_TEXT]  # 意图、文本、动作名称、动作文本
+
+# 需要编码的序列特征
+SEQUENCE_FEATURES_TO_ENCODE = [TEXT, ACTION_TEXT, f"{LABEL}_{ACTION_TEXT}"]  # 文本、动作文本、标签动作文本
+
+# 需要编码的标签特征
 LABEL_FEATURES_TO_ENCODE = [
-    f"{LABEL}_{ACTION_NAME}",
-    f"{LABEL}_{ACTION_TEXT}",
-    f"{LABEL}_{INTENT}",
+    f"{LABEL}_{ACTION_NAME}",  # 标签动作名称
+    f"{LABEL}_{ACTION_TEXT}",  # 标签动作文本
+    f"{LABEL}_{INTENT}",  # 标签意图
 ]
-STATE_LEVEL_FEATURES = [ENTITIES, SLOTS, ACTIVE_LOOP]
-PREDICTION_FEATURES = STATE_LEVEL_FEATURES + SENTENCE_FEATURES_TO_ENCODE + [DIALOGUE]
+
+# 状态级别特征
+STATE_LEVEL_FEATURES = [ENTITIES, SLOTS, ACTIVE_LOOP]  # 实体、槽位、活跃循环
+
+# 预测特征
+PREDICTION_FEATURES = STATE_LEVEL_FEATURES + SENTENCE_FEATURES_TO_ENCODE + [DIALOGUE]  # 状态级别特征 + 句子特征 + 对话
 
 
 @DefaultV1Recipe.register(
     DefaultV1Recipe.ComponentType.POLICY_WITH_END_TO_END_SUPPORT, is_trainable=True
 )
 class TEDPolicy(Policy):
-    """Transformer Embedding Dialogue (TED) Policy.
+    """Transformer Embedding Dialogue (TED) 策略。
 
-    The model architecture is described in
-    detail in https://arxiv.org/abs/1910.00486.
-    In summary, the architecture comprises of the
-    following steps:
-        - concatenate user input (user intent and entities), previous system actions,
-          slots and active forms for each time step into an input vector to
-          pre-transformer embedding layer;
-        - feed it to transformer;
-        - apply a dense layer to the output of the transformer to get embeddings of a
-          dialogue for each time step;
-        - apply a dense layer to create embeddings for system actions for each time
-          step;
-        - calculate the similarity between the dialogue embedding and embedded system
-          actions. This step is based on the StarSpace
-          (https://arxiv.org/abs/1709.03856) idea.
+    模型架构在 https://arxiv.org/abs/1910.00486 中有详细描述。
+    简而言之，架构包含以下步骤：
+        - 将用户输入（用户意图和实体）、先前的系统动作、
+          槽位和活跃表单在每个时间步连接成输入向量，送入
+          预Transformer嵌入层；
+        - 将其输入到Transformer；
+        - 对Transformer的输出应用密集层以获得每个时间步的
+          对话嵌入；
+        - 应用密集层为每个时间步创建系统动作的嵌入；
+        - 计算对话嵌入和嵌入的系统动作之间的相似度。
+          此步骤基于StarSpace (https://arxiv.org/abs/1709.03856) 的思想。
     """
 
     @staticmethod
     def get_default_config() -> Dict[Text, Any]:
-        """Returns the default config (see parent class for full docstring)."""
-        # please make sure to update the docs when changing a default parameter
+        """返回默认配置（参见父类的完整文档字符串）。"""
+        # 更改默认参数时请确保更新文档
         return {
-            # ## Architecture of the used neural network
-            # Hidden layer sizes for layers before the embedding layers for user message
-            # and labels.
-            # The number of hidden layers is equal to the length of the corresponding
-            # list.
-            HIDDEN_LAYERS_SIZES: {
-                TEXT: [],
-                ACTION_TEXT: [],
-                f"{LABEL}_{ACTION_TEXT}": [],
+            # ## 使用的神经网络架构
+            # 用户消息和标签嵌入层之前的隐藏层大小。
+            # 隐藏层数量等于对应列表的长度。
+            HIDDEN_LAYERS_SIZES: {  # 隐藏层大小
+                TEXT: [],  # 文本
+                ACTION_TEXT: [],  # 动作文本
+                f"{LABEL}_{ACTION_TEXT}": [],  # 标签动作文本
             },
-            # Dense dimension to use for sparse features.
-            DENSE_DIMENSION: {
-                TEXT: 128,
-                ACTION_TEXT: 128,
-                f"{LABEL}_{ACTION_TEXT}": 128,
-                INTENT: 20,
-                ACTION_NAME: 20,
-                f"{LABEL}_{ACTION_NAME}": 20,
-                ENTITIES: 20,
-                SLOTS: 20,
-                ACTIVE_LOOP: 20,
+            # 用于稀疏特征的密集维度。
+            DENSE_DIMENSION: {  # 密集维度
+                TEXT: 128,  # 文本
+                ACTION_TEXT: 128,  # 动作文本
+                f"{LABEL}_{ACTION_TEXT}": 128,  # 标签动作文本
+                INTENT: 20,  # 意图
+                ACTION_NAME: 20,  # 动作名称
+                f"{LABEL}_{ACTION_NAME}": 20,  # 标签动作名称
+                ENTITIES: 20,  # 实体
+                SLOTS: 20,  # 槽位
+                ACTIVE_LOOP: 20,  # 活跃循环
             },
-            # Default dimension to use for concatenating sequence and sentence features.
-            CONCAT_DIMENSION: {
-                TEXT: 128,
-                ACTION_TEXT: 128,
-                f"{LABEL}_{ACTION_TEXT}": 128,
+            # 用于连接序列和句子特征的默认维度。
+            CONCAT_DIMENSION: {  # 连接维度
+                TEXT: 128,  # 文本
+                ACTION_TEXT: 128,  # 动作文本
+                f"{LABEL}_{ACTION_TEXT}": 128,  # 标签动作文本
             },
-            # Dimension size of embedding vectors before the dialogue transformer
-            # encoder.
-            ENCODING_DIMENSION: 50,
-            # Number of units in transformer encoders
-            TRANSFORMER_SIZE: {
-                TEXT: 128,
-                ACTION_TEXT: 128,
-                f"{LABEL}_{ACTION_TEXT}": 128,
-                DIALOGUE: 128,
+            # 对话Transformer编码器之前嵌入向量的维度大小。
+            ENCODING_DIMENSION: 50,  # 编码维度
+            # Transformer编码器中的单元数
+            TRANSFORMER_SIZE: {  # Transformer大小
+                TEXT: 128,  # 文本
+                ACTION_TEXT: 128,  # 动作文本
+                f"{LABEL}_{ACTION_TEXT}": 128,  # 标签动作文本
+                DIALOGUE: 128,  # 对话
             },
-            # Number of layers in transformer encoders
-            NUM_TRANSFORMER_LAYERS: {
-                TEXT: 1,
-                ACTION_TEXT: 1,
-                f"{LABEL}_{ACTION_TEXT}": 1,
-                DIALOGUE: 1,
+            # Transformer编码器中的层数
+            NUM_TRANSFORMER_LAYERS: {  # Transformer层数
+                TEXT: 1,  # 文本
+                ACTION_TEXT: 1,  # 动作文本
+                f"{LABEL}_{ACTION_TEXT}": 1,  # 标签动作文本
+                DIALOGUE: 1,  # 对话
             },
-            # Number of attention heads in transformer
-            NUM_HEADS: 4,
-            # If 'True' use key relative embeddings in attention
-            KEY_RELATIVE_ATTENTION: False,
-            # If 'True' use value relative embeddings in attention
-            VALUE_RELATIVE_ATTENTION: False,
-            # Max position for relative embeddings. Only in effect if key- or value
-            # relative
-            # attention are turned on
-            MAX_RELATIVE_POSITION: 5,
-            # Use a unidirectional or bidirectional encoder
-            # for `text`, `action_text`, and `label_action_text`.
-            UNIDIRECTIONAL_ENCODER: False,
-            # ## Training parameters
-            # Initial and final batch sizes:
-            # Batch size will be linearly increased for each epoch.
-            BATCH_SIZES: [64, 256],
-            # Strategy used whenc creating batches.
-            # Can be either 'sequence' or 'balanced'.
-            BATCH_STRATEGY: BALANCED,
-            # Number of epochs to train
-            EPOCHS: 1,
-            # Set random seed to any 'int' to get reproducible results
-            RANDOM_SEED: None,
-            # Initial learning rate for the optimizer
-            LEARNING_RATE: 0.001,
-            # ## Parameters for embeddings
-            # Dimension size of embedding vectors
-            EMBEDDING_DIMENSION: 20,
-            # The number of incorrect labels. The algorithm will minimize
-            # their similarity to the user input during training.
-            NUM_NEG: 20,
-            # Type of similarity measure to use, either 'auto' or 'cosine' or 'inner'.
-            SIMILARITY_TYPE: AUTO,
-            # The type of the loss function, either 'cross_entropy' or 'margin'.
-            LOSS_TYPE: CROSS_ENTROPY,
-            # Number of top actions for which confidences should be predicted.
-            # The number of  Set to `0` if confidences for all actions should be
-            # predicted. The confidences for all other actions will be set to 0.
-            RANKING_LENGTH: 0,
-            # Determines wether the confidences of the chosen top actions should be
-            # renormalized so that they sum up to 1. By default, we do not renormalize
-            # and return the confidences for the top actions as is.
-            # Note that renormalization only makes sense if confidences are generated
-            # via `softmax`.
-            RENORMALIZE_CONFIDENCES: False,
-            # Indicates how similar the algorithm should try to make embedding vectors
-            # for correct labels.
-            # Should be 0.0 < ... < 1.0 for 'cosine' similarity type.
-            MAX_POS_SIM: 0.8,
-            # Maximum negative similarity for incorrect labels.
-            # Should be -1.0 < ... < 1.0 for 'cosine' similarity type.
-            MAX_NEG_SIM: -0.2,
-            # If 'True' the algorithm only minimizes maximum similarity over
-            # incorrect intent labels, used only if 'loss_type' is set to 'margin'.
-            USE_MAX_NEG_SIM: True,
-            # If 'True' scale loss inverse proportionally to the confidence
-            # of the correct prediction
-            SCALE_LOSS: True,
-            # ## Regularization parameters
-            # The scale of regularization
-            REGULARIZATION_CONSTANT: 0.001,
-            # The scale of how important is to minimize the maximum similarity
-            # between embeddings of different labels,
-            # used only if 'loss_type' is set to 'margin'.
-            NEGATIVE_MARGIN_SCALE: 0.8,
-            # Dropout rate for embedding layers of dialogue features.
-            DROP_RATE_DIALOGUE: 0.1,
-            # Dropout rate for embedding layers of utterance level features.
-            DROP_RATE: 0.0,
-            # Dropout rate for embedding layers of label, e.g. action, features.
-            DROP_RATE_LABEL: 0.0,
-            # Dropout rate for attention.
-            DROP_RATE_ATTENTION: 0.0,
-            # Fraction of trainable weights in internal layers.
-            CONNECTION_DENSITY: 0.2,
-            # If 'True' apply dropout to sparse input tensors
-            SPARSE_INPUT_DROPOUT: True,
-            # If 'True' apply dropout to dense input tensors
-            DENSE_INPUT_DROPOUT: True,
-            # If 'True' random tokens of the input message will be masked. Since there
-            # is no related loss term used inside TED, the masking effectively becomes
-            # just input dropout applied to the text of user utterances.
-            MASKED_LM: False,
-            # ## Evaluation parameters
-            # How often calculate validation accuracy.
-            # Small values may hurt performance.
-            EVAL_NUM_EPOCHS: 20,
-            # How many examples to use for hold out validation set
-            # Large values may hurt performance, e.g. model accuracy.
-            # Set to 0 for no validation.
-            EVAL_NUM_EXAMPLES: 0,
-            # If you want to use tensorboard to visualize training and validation
-            # metrics, set this option to a valid output directory.
-            TENSORBOARD_LOG_DIR: None,
-            # Define when training metrics for tensorboard should be logged.
-            # Either after every epoch or for every training step.
-            # Valid values: 'epoch' and 'batch'
-            TENSORBOARD_LOG_LEVEL: "epoch",
-            # Perform model checkpointing
-            CHECKPOINT_MODEL: False,
-            # Only pick e2e prediction if the policy is confident enough
-            E2E_CONFIDENCE_THRESHOLD: 0.5,
-            # Specify what features to use as sequence and sentence features.
-            # By default all features in the pipeline are used.
-            FEATURIZERS: [],
-            # If set to true, entities are predicted in user utterances.
-            ENTITY_RECOGNITION: True,
-            # if 'True' applies sigmoid on all similarity terms and adds
-            # it to the loss function to ensure that similarity values are
-            # approximately bounded. Used inside cross-entropy loss only.
-            CONSTRAIN_SIMILARITIES: False,
-            # Model confidence to be returned during inference. Currently, the only
-            # possible value is `softmax`.
-            MODEL_CONFIDENCE: SOFTMAX,
-            # 'BILOU_flag' determines whether to use BILOU tagging or not.
-            # If set to 'True' labelling is more rigorous, however more
-            # examples per entity are required.
-            # Rule of thumb: you should have more than 100 examples per entity.
-            BILOU_FLAG: True,
-            # Split entities by comma, this makes sense e.g. for a list of
-            # ingredients in a recipe, but it doesn't make sense for the parts of
-            # an address
-            SPLIT_ENTITIES_BY_COMMA: SPLIT_ENTITIES_BY_COMMA_DEFAULT_VALUE,
-            # Max history of the policy, unbounded by default
-            POLICY_MAX_HISTORY: DEFAULT_MAX_HISTORY,
-            # Determines the importance of policies, higher values take precedence
-            POLICY_PRIORITY: DEFAULT_POLICY_PRIORITY,
-            USE_GPU: True,
+            # Transformer中的注意力头数
+            NUM_HEADS: 4,  # 注意力头数
+            # 如果为'True'，在注意力中使用键相对嵌入
+            KEY_RELATIVE_ATTENTION: False,  # 键相对注意力
+            # 如果为'True'，在注意力中使用值相对嵌入
+            VALUE_RELATIVE_ATTENTION: False,  # 值相对注意力
+            # 相对嵌入的最大位置。仅在键或值相对注意力开启时生效
+            MAX_RELATIVE_POSITION: 5,  # 最大相对位置
+            # 对`text`、`action_text`和`label_action_text`使用单向或双向编码器
+            UNIDIRECTIONAL_ENCODER: False,  # 单向编码器
+            # ## 训练参数
+            # 初始和最终批次大小：
+            # 批次大小将在每个轮次线性增加。
+            BATCH_SIZES: [64, 256],  # 批次大小
+            # 创建批次时使用的策略。
+            # 可以是'sequence'或'balanced'。
+            BATCH_STRATEGY: BALANCED,  # 批次策略
+            # 训练的轮数
+            EPOCHS: 1,  # 训练轮数
+            # 设置随机种子为任何'int'以获得可重现的结果
+            RANDOM_SEED: None,  # 随机种子
+            # 优化器的初始学习率
+            LEARNING_RATE: 0.001,  # 学习率
+            # ## 嵌入参数
+            # 嵌入向量的维度大小
+            EMBEDDING_DIMENSION: 20,  # 嵌入维度
+            # 错误标签的数量。算法将在训练期间最小化
+            # 它们与用户输入的相似度。
+            NUM_NEG: 20,  # 负样本数量
+            # 使用的相似度度量类型，可以是'auto'、'cosine'或'inner'。
+            SIMILARITY_TYPE: AUTO,  # 相似度类型
+            # 损失函数的类型，可以是'cross_entropy'或'margin'。
+            LOSS_TYPE: CROSS_ENTROPY,  # 损失类型
+            # 应预测置信度的顶级动作数量。
+            # 如果应预测所有动作的置信度，则设置为`0`。
+            # 所有其他动作的置信度将设置为0。
+            RANKING_LENGTH: 0,  # 排序长度
+            # 确定所选顶级动作的置信度是否应重新归一化，
+            # 使其总和为1。默认情况下，我们不重新归一化，
+            # 并按原样返回顶级动作的置信度。
+            # 注意：重新归一化仅在通过`softmax`生成置信度时才有意义。
+            RENORMALIZE_CONFIDENCES: False,  # 重新归一化置信度
+            # 指示算法应尝试使正确标签的嵌入向量有多相似。
+            # 对于'cosine'相似度类型，应为0.0 < ... < 1.0。
+            MAX_POS_SIM: 0.8,  # 最大正相似度
+            # 错误标签的最大负相似度。
+            # 对于'cosine'相似度类型，应为-1.0 < ... < 1.0。
+            MAX_NEG_SIM: -0.2,  # 最大负相似度
+            # 如果为'True'，算法仅最小化错误意图标签上的最大相似度，
+            # 仅在'loss_type'设置为'margin'时使用。
+            USE_MAX_NEG_SIM: True,  # 使用最大负相似度
+            # 如果为'True'，按正确预测的置信度反比例缩放损失
+            SCALE_LOSS: True,  # 缩放损失
+            # ## 正则化参数
+            # 正则化的缩放
+            REGULARIZATION_CONSTANT: 0.001,  # 正则化常数
+            # 最小化不同标签嵌入之间最大相似度的重要性的缩放，
+            # 仅在'loss_type'设置为'margin'时使用。
+            NEGATIVE_MARGIN_SCALE: 0.8,  # 负边距缩放
+            # 对话特征嵌入层的丢弃率。
+            DROP_RATE_DIALOGUE: 0.1,  # 对话丢弃率
+            # 话语级别特征嵌入层的丢弃率。
+            DROP_RATE: 0.0,  # 丢弃率
+            # 标签（如动作）特征嵌入层的丢弃率。
+            DROP_RATE_LABEL: 0.0,  # 标签丢弃率
+            # 注意力的丢弃率。
+            DROP_RATE_ATTENTION: 0.0,  # 注意力丢弃率
+            # 内部层中可训练权重的比例。
+            CONNECTION_DENSITY: 0.2,  # 连接密度
+            # 如果为'True'，对稀疏输入张量应用丢弃
+            SPARSE_INPUT_DROPOUT: True,  # 稀疏输入丢弃
+            # 如果为'True'，对密集输入张量应用丢弃
+            DENSE_INPUT_DROPOUT: True,  # 密集输入丢弃
+            # 如果为'True'，输入消息的随机令牌将被掩码。由于TED内部
+            # 没有使用相关的损失项，掩码实际上只是应用于用户话语文本的输入丢弃。
+            MASKED_LM: False,  # 掩码语言模型
+            # ## 评估参数
+            # 计算验证准确性的频率。
+            # 小值可能损害性能。
+            EVAL_NUM_EPOCHS: 20,  # 评估轮数
+            # 用于保留验证集的示例数量
+            # 大值可能损害性能，例如模型准确性。
+            # 设置为0表示不验证。
+            EVAL_NUM_EXAMPLES: 0,  # 评估示例数量
+            # 如果您想使用tensorboard可视化训练和验证
+            # 指标，请将此选项设置为有效的输出目录。
+            TENSORBOARD_LOG_DIR: None,  # TensorBoard日志目录
+            # 定义何时记录tensorboard的训练指标。
+            # 在每个轮次后或每个训练步骤后。
+            # 有效值：'epoch'和'batch'
+            TENSORBOARD_LOG_LEVEL: "epoch",  # TensorBoard日志级别
+            # 执行模型检查点
+            CHECKPOINT_MODEL: False,  # 检查点模型
+            # 仅在策略足够自信时才选择e2e预测
+            E2E_CONFIDENCE_THRESHOLD: 0.5,  # 端到端置信度阈值
+            # 指定用作序列和句子特征的特征。
+            # 默认情况下，使用管道中的所有特征。
+            FEATURIZERS: [],  # 特征化器
+            # 如果设置为true，则在用户话语中预测实体。
+            ENTITY_RECOGNITION: True,  # 实体识别
+            # 如果为'True'，对所有相似度项应用sigmoid并将其
+            # 添加到损失函数中，以确保相似度值近似有界。仅在交叉熵损失内部使用。
+            CONSTRAIN_SIMILARITIES: False,  # 约束相似度
+            # 推理期间返回的模型置信度。目前，唯一
+            # 可能的值是`softmax`。
+            MODEL_CONFIDENCE: SOFTMAX,  # 模型置信度
+            # 'BILOU_flag'确定是否使用BILOU标记。
+            # 如果设置为'True'，标记更严格，但每个实体需要更多示例。
+            # 经验法则：每个实体应该有超过100个示例。
+            BILOU_FLAG: True,  # BILOU标志
+            # 按逗号分割实体，这对于例如食谱中的成分列表有意义，
+            # 但对于地址的部分没有意义
+            SPLIT_ENTITIES_BY_COMMA: SPLIT_ENTITIES_BY_COMMA_DEFAULT_VALUE,  # 按逗号分割实体
+            # 策略的最大历史，默认无限制
+            POLICY_MAX_HISTORY: DEFAULT_MAX_HISTORY,  # 策略最大历史
+            # 确定策略的重要性，较高值优先
+            POLICY_PRIORITY: DEFAULT_POLICY_PRIORITY,  # 策略优先级
+            USE_GPU: True,  # 使用GPU
         }
 
     def __init__(
@@ -360,55 +394,57 @@ class TEDPolicy(Policy):
         fake_features: Optional[Dict[Text, List[Features]]] = None,
         entity_tag_specs: Optional[List[EntityTagSpec]] = None,
     ) -> None:
-        """Declares instance variables with default values."""
-        super().__init__(
+        """声明具有默认值的实例变量。"""
+        super().__init__(  # 调用父类初始化
             config, model_storage, resource, execution_context, featurizer=featurizer
         )
-        self.split_entities_config = rasa.utils.train_utils.init_split_entities(
+        self.split_entities_config = rasa.utils.train_utils.init_split_entities(  # 初始化实体分割配置
             config[SPLIT_ENTITIES_BY_COMMA], SPLIT_ENTITIES_BY_COMMA_DEFAULT_VALUE
         )
-        self._load_params(config)
+        self._load_params(config)  # 加载参数
 
-        self.model = model
+        self.model = model  # 模型
 
-        self._entity_tag_specs = entity_tag_specs
+        self._entity_tag_specs = entity_tag_specs  # 实体标签规范
 
-        self.fake_features = fake_features or defaultdict(list)
-        # TED is only e2e if only text is present in fake features, which represent
-        # all possible input features for current version of this trained ted
-        self.only_e2e = TEXT in self.fake_features and INTENT not in self.fake_features
+        self.fake_features = fake_features or defaultdict(list)  # 假特征
+        # TED只有在假特征中只存在文本时才端到端，假特征代表
+        # 当前版本训练TED的所有可能输入特征
+        self.only_e2e = TEXT in self.fake_features and INTENT not in self.fake_features  # 仅端到端
 
-        self._label_data: Optional[RasaModelData] = None
-        self.data_example: Optional[Dict[Text, Dict[Text, List[FeatureArray]]]] = None
+        self._label_data: Optional[RasaModelData] = None  # 标签数据
+        self.data_example: Optional[Dict[Text, Dict[Text, List[FeatureArray]]]] = None  # 数据示例
 
-        self.tmp_checkpoint_dir = None
-        if self.config[CHECKPOINT_MODEL]:
-            self.tmp_checkpoint_dir = Path(rasa.utils.io.create_temporary_directory())
+        self.tmp_checkpoint_dir = None  # 临时检查点目录
+        if self.config[CHECKPOINT_MODEL]:  # 如果启用检查点模型
+            self.tmp_checkpoint_dir = Path(rasa.utils.io.create_temporary_directory())  # 创建临时目录
 
     @staticmethod
     def model_class() -> Type[TED]:
-        """Gets the class of the model architecture to be used by the policy.
+        """获取策略要使用的模型架构类。
 
         Returns:
-            Required class.
+            所需的类。
         """
-        return TED
+        return TED  # 返回TED类
 
     @classmethod
     def _metadata_filename(cls) -> Optional[Text]:
-        return "ted_policy"
+        """返回元数据文件名。"""
+        return "ted_policy"  # 返回ted_policy
 
     def _load_params(self, config: Dict[Text, Any]) -> None:
-        new_config = rasa.utils.train_utils.check_core_deprecated_options(config)
-        self.config = new_config
-        self._auto_update_configuration()
+        """加载参数。"""
+        new_config = rasa.utils.train_utils.check_core_deprecated_options(config)  # 检查已弃用的选项
+        self.config = new_config  # 设置配置
+        self._auto_update_configuration()  # 自动更新配置
 
     def _auto_update_configuration(self) -> None:
-        """Takes care of deprecations and compatibility of parameters."""
-        self.config = rasa.utils.train_utils.update_confidence_type(self.config)
-        rasa.utils.train_utils.validate_configuration_settings(self.config)
-        self.config = rasa.utils.train_utils.update_similarity_type(self.config)
-        self.config = rasa.utils.train_utils.update_evaluation_parameters(self.config)
+        """处理参数的弃用和兼容性。"""
+        self.config = rasa.utils.train_utils.update_confidence_type(self.config)  # 更新置信度类型
+        rasa.utils.train_utils.validate_configuration_settings(self.config)  # 验证配置设置
+        self.config = rasa.utils.train_utils.update_similarity_type(self.config)  # 更新相似度类型
+        self.config = rasa.utils.train_utils.update_evaluation_parameters(self.config)  # 更新评估参数
 
     def _create_label_data(
         self,
@@ -704,43 +740,43 @@ class TEDPolicy(Policy):
         precomputations: Optional[MessageContainerForCoreFeaturization] = None,
         **kwargs: Any,
     ) -> Resource:
-        """Trains the policy (see parent class for full docstring)."""
-        if not training_trackers:
-            rasa.shared.utils.io.raise_warning(
+        """训练策略（参见父类的完整文档字符串）。"""
+        if not training_trackers:  # 如果没有训练跟踪器
+            rasa.shared.utils.io.raise_warning(  # 发出警告
                 f"Skipping training of `{self.__class__.__name__}` "
                 f"as no data was provided. You can exclude this "
                 f"policy in the configuration "
                 f"file to avoid this warning.",
                 category=UserWarning,
             )
-            return self._resource
+            return self._resource  # 返回资源
 
-        training_trackers = SupportedData.trackers_for_supported_data(
+        training_trackers = SupportedData.trackers_for_supported_data(  # 获取支持数据的跟踪器
             self.supported_data(), training_trackers
         )
 
-        model_data, label_ids = self._prepare_for_training(
+        model_data, label_ids = self._prepare_for_training(  # 准备训练数据
             training_trackers, domain, precomputations
         )
 
-        if model_data.is_empty():
-            rasa.shared.utils.io.raise_warning(
+        if model_data.is_empty():  # 如果模型数据为空
+            rasa.shared.utils.io.raise_warning(  # 发出警告
                 f"Skipping training of `{self.__class__.__name__}` "
                 f"as no data was provided. You can exclude this "
                 f"policy in the configuration "
                 f"file to avoid this warning.",
                 category=UserWarning,
             )
-            return self._resource
+            return self._resource  # 返回资源
 
-        with (
+        with (  # 使用GPU或CPU
             contextlib.nullcontext() if self.config["use_gpu"] else tf.device("/cpu:0")
         ):
-            self.run_training(model_data, label_ids)
+            self.run_training(model_data, label_ids)  # 运行训练
 
-        self.persist()
+        self.persist()  # 持久化模型
 
-        return self._resource
+        return self._resource  # 返回资源
 
     def _featurize_tracker(
         self,
@@ -826,53 +862,53 @@ class TEDPolicy(Policy):
         precomputations: Optional[MessageContainerForCoreFeaturization] = None,
         **kwargs: Any,
     ) -> PolicyPrediction:
-        """Predicts the next action (see parent class for full docstring)."""
-        if self.model is None:
-            return self._prediction(self._default_predictions(domain))
+        """预测下一个动作（参见父类的完整文档字符串）。"""
+        if self.model is None:  # 如果模型为空
+            return self._prediction(self._default_predictions(domain))  # 返回默认预测
 
-        # create model data from tracker
-        tracker_state_features = self._featurize_tracker(
+        # 从跟踪器创建模型数据
+        tracker_state_features = self._featurize_tracker(  # 特征化跟踪器
             tracker, domain, precomputations, rule_only_data=rule_only_data
         )
-        model_data = self._create_model_data(tracker_state_features)
-        outputs = self.model.run_inference(model_data)
+        model_data = self._create_model_data(tracker_state_features)  # 创建模型数据
+        outputs = self.model.run_inference(model_data)  # 运行推理
 
-        if isinstance(outputs["similarities"], np.ndarray):
-            # take the last prediction in the sequence
-            similarities = outputs["similarities"][:, -1, :]
+        if isinstance(outputs["similarities"], np.ndarray):  # 如果相似度是numpy数组
+            # 取序列中的最后一个预测
+            similarities = outputs["similarities"][:, -1, :]  # 获取相似度
         else:
-            raise TypeError(
+            raise TypeError(  # 抛出类型错误
                 "model output for `similarities` " "should be a numpy array"
             )
-        if isinstance(outputs["scores"], np.ndarray):
-            confidences = outputs["scores"][:, -1, :]
+        if isinstance(outputs["scores"], np.ndarray):  # 如果分数是numpy数组
+            confidences = outputs["scores"][:, -1, :]  # 获取置信度
         else:
-            raise TypeError("model output for `scores` should be a numpy array")
-        # take correct prediction from batch
-        confidence, is_e2e_prediction = self._pick_confidence(
+            raise TypeError("model output for `scores` should be a numpy array")  # 抛出类型错误
+        # 从批次中取正确的预测
+        confidence, is_e2e_prediction = self._pick_confidence(  # 选择置信度
             confidences, similarities, domain
         )
 
-        # rank and mask the confidence (if we need to)
-        ranking_length = self.config[RANKING_LENGTH]
-        if 0 < ranking_length < len(confidence):
-            renormalize = (
+        # 对置信度进行排序和掩码（如果需要）
+        ranking_length = self.config[RANKING_LENGTH]  # 排序长度
+        if 0 < ranking_length < len(confidence):  # 如果需要排序
+            renormalize = (  # 重新归一化
                 self.config[RENORMALIZE_CONFIDENCES]
                 and self.config[MODEL_CONFIDENCE] == SOFTMAX
             )
-            _, confidence = train_utils.rank_and_mask(
+            _, confidence = train_utils.rank_and_mask(  # 排序和掩码
                 confidence, ranking_length=ranking_length, renormalize=renormalize
             )
 
-        optional_events = self._create_optional_event_for_entities(
+        optional_events = self._create_optional_event_for_entities(  # 创建实体的可选事件
             outputs, is_e2e_prediction, precomputations, tracker
         )
 
-        return self._prediction(
-            confidence.tolist(),
-            is_end_to_end_prediction=is_e2e_prediction,
-            optional_events=optional_events,
-            diagnostic_data=outputs.get(DIAGNOSTIC_DATA),
+        return self._prediction(  # 返回预测
+            confidence.tolist(),  # 置信度列表
+            is_end_to_end_prediction=is_e2e_prediction,  # 是否端到端预测
+            optional_events=optional_events,  # 可选事件
+            diagnostic_data=outputs.get(DIAGNOSTIC_DATA),  # 诊断数据
         )
 
     def _create_optional_event_for_entities(
@@ -1210,7 +1246,7 @@ class TEDPolicy(Policy):
 
 
 class TED(TransformerRasaModel):
-    """TED model architecture from https://arxiv.org/abs/1910.00486."""
+    """来自 https://arxiv.org/abs/1910.00486 的TED模型架构。"""
 
     def __init__(
         self,
@@ -1220,41 +1256,40 @@ class TED(TransformerRasaModel):
         label_data: RasaModelData,
         entity_tag_specs: Optional[List[EntityTagSpec]],
     ) -> None:
-        """Initializes the TED model.
+        """初始化TED模型。
 
         Args:
-            data_signature: the data signature of the input data
-            config: the model configuration
-            max_history_featurizer_is_used: if 'True'
-                only the last dialogue turn will be used
-            label_data: the label data
-            entity_tag_specs: the entity tag specifications
+            data_signature: 输入数据的数据签名
+            config: 模型配置
+            max_history_featurizer_is_used: 如果为'True'，只使用最后一个对话轮次
+            label_data: 标签数据
+            entity_tag_specs: 实体标签规范
         """
-        super().__init__("TED", config, data_signature, label_data)
+        super().__init__("TED", config, data_signature, label_data)  # 调用父类初始化
 
-        self.max_history_featurizer_is_used = max_history_featurizer_is_used
+        self.max_history_featurizer_is_used = max_history_featurizer_is_used  # 是否使用最大历史特征化器
 
-        self.predict_data_signature = {
+        self.predict_data_signature = {  # 预测数据签名
             feature_name: features
             for feature_name, features in data_signature.items()
-            if feature_name in PREDICTION_FEATURES
+            if feature_name in PREDICTION_FEATURES  # 如果在预测特征中
         }
 
-        self._entity_tag_specs = entity_tag_specs
+        self._entity_tag_specs = entity_tag_specs  # 实体标签规范
 
-        # metrics
-        self.action_loss = tf.keras.metrics.Mean(name="loss")
-        self.action_acc = tf.keras.metrics.Mean(name="acc")
-        self.entity_loss = tf.keras.metrics.Mean(name="e_loss")
-        self.entity_f1 = tf.keras.metrics.Mean(name="e_f1")
-        self.metrics_to_log += ["loss", "acc"]
-        if self.config[ENTITY_RECOGNITION]:
-            self.metrics_to_log += ["e_loss", "e_f1"]
+        # 指标
+        self.action_loss = tf.keras.metrics.Mean(name="loss")  # 动作损失
+        self.action_acc = tf.keras.metrics.Mean(name="acc")  # 动作准确率
+        self.entity_loss = tf.keras.metrics.Mean(name="e_loss")  # 实体损失
+        self.entity_f1 = tf.keras.metrics.Mean(name="e_f1")  # 实体F1分数
+        self.metrics_to_log += ["loss", "acc"]  # 要记录的指标
+        if self.config[ENTITY_RECOGNITION]:  # 如果启用实体识别
+            self.metrics_to_log += ["e_loss", "e_f1"]  # 添加实体指标
 
-        # needed for efficient prediction
-        self.all_labels_embed: Optional[tf.Tensor] = None
+        # 高效预测所需
+        self.all_labels_embed: Optional[tf.Tensor] = None  # 所有标签嵌入
 
-        self._prepare_layers()
+        self._prepare_layers()  # 准备层
 
     def _check_data(self) -> None:
         if not any(key in [INTENT, TEXT] for key in self.data_signature.keys()):

@@ -1,10 +1,20 @@
-class NaturalLanguageInterpreter:
-    """Remove once all old components are deleted."""
+# =============================================================================
+# NLU 解释器基类 - 定义自然语言理解解释器的接口
+# =============================================================================
 
+class NaturalLanguageInterpreter:
+    """自然语言解释器基类。
+    
+    注意：一旦所有旧组件被删除，此类将被移除。
+    此类用于向后兼容，提供自然语言理解的接口。
+    """
     pass
 
 
 class RegexInterpreter:
-    """Remove once all old components are deleted."""
-
+    """正则表达式解释器基类。
+    
+    注意：一旦所有旧组件被删除，此类将被移除。
+    此类用于向后兼容，提供基于正则表达式的解释功能。
+    """
     pass

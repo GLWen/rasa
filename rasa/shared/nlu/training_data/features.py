@@ -12,9 +12,23 @@ import rasa.shared.nlu.training_data.util
 import rasa.shared.utils.io
 from rasa.shared.nlu.constants import FEATURE_TYPE_SEQUENCE, FEATURE_TYPE_SENTENCE
 
+# =============================================================================
+# 特征模块 - 提供训练数据特征的存储、管理和持久化功能
+# =============================================================================
+
 
 @dataclass
 class FeatureMetadata:
+    """特征元数据类，用于存储特征的元信息。
+    
+    Attributes:
+        data_type: 数据类型
+        attribute: 属性名称
+        origin: 特征来源
+        is_sparse: 是否为稀疏特征
+        shape: 特征形状
+        safetensors_key: safetensors 文件中的键名
+    """
     data_type: str
     attribute: str
     origin: Union[str, List[str]]
@@ -26,14 +40,14 @@ class FeatureMetadata:
 def save_features(
     features_dict: Dict[Text, List[Features]], file_name: str
 ) -> Dict[str, Any]:
-    """Save a dictionary of Features lists to disk using safetensors.
+    """使用 safetensors 将特征字典保存到磁盘。
 
     Args:
-        features_dict: Dictionary mapping strings to lists of Features objects
-        file_name: File to save the features to
+        features_dict: 映射字符串到特征对象列表的字典
+        file_name: 保存特征的文件名
 
     Returns:
-        The metadata to reconstruct the features.
+        用于重构特征的元数据
     """
     # All tensors are stored in a single safetensors file
     tensors_to_save = {}

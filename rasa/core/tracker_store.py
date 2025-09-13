@@ -1,81 +1,113 @@
+# 导入未来版本的注解支持，确保类型注解的兼容性
 from __future__ import annotations
+# 导入上下文管理器，用于资源管理
 import contextlib
+# 导入迭代工具，用于处理迭代器
 import itertools
+# 导入JSON处理模块，用于序列化和反序列化
 import json
+# 导入日志模块，用于记录日志信息
 import logging
+# 导入操作系统接口，用于环境变量等操作
 import os
+# 导入检查函数，用于判断是否为协程或可等待对象
 from inspect import isawaitable, iscoroutinefunction
 
+# 导入时间模块的sleep函数，用于延迟操作
 from time import sleep
+# 导入类型提示相关的类型
 from typing import (
-    Any,
-    Callable,
-    Dict,
-    Iterable,
-    Iterator,
-    List,
-    Optional,
-    Text,
-    Union,
-    TYPE_CHECKING,
-    Generator,
-    TypeVar,
-    Generic,
+    Any,           # 任意类型
+    Callable,      # 可调用类型
+    Dict,          # 字典类型
+    Iterable,      # 可迭代类型
+    Iterator,      # 迭代器类型
+    List,          # 列表类型
+    Optional,      # 可选类型
+    Text,          # 文本类型（字符串的别名）
+    Union,         # 联合类型
+    TYPE_CHECKING, # 类型检查标志
+    Generator,     # 生成器类型
+    TypeVar,       # 类型变量
+    Generic,       # 泛型基类
 )
 
+# 导入DynamoDB查询条件
 from boto3.dynamodb.conditions import Key
+# 导入MongoDB集合类
 from pymongo.collection import Collection
 
+# 导入Rasa核心工具模块
 import rasa.core.utils as core_utils
+# 导入Rasa共享CLI工具
 import rasa.shared.utils.cli
+# 导入Rasa共享通用工具
 import rasa.shared.utils.common
+# 导入Rasa共享IO工具
 import rasa.shared.utils.io
+# 导入Rasa插件管理器
 from rasa.plugin import plugin_manager
+# 导入动作监听常量
 from rasa.shared.core.constants import ACTION_LISTEN_NAME
+# 导入事件代理基类
 from rasa.core.brokers.broker import EventBroker
+# 导入PostgreSQL相关常量
 from rasa.core.constants import (
-    POSTGRESQL_SCHEMA,
-    POSTGRESQL_MAX_OVERFLOW,
-    POSTGRESQL_POOL_SIZE,
+    POSTGRESQL_SCHEMA,        # PostgreSQL模式名
+    POSTGRESQL_MAX_OVERFLOW,  # PostgreSQL最大溢出连接数
+    POSTGRESQL_POOL_SIZE,     # PostgreSQL连接池大小
 )
+# 导入对话类
 from rasa.shared.core.conversation import Dialogue
+# 导入领域类
 from rasa.shared.core.domain import Domain
+# 导入事件相关类
 from rasa.shared.core.events import SessionStarted, Event
+# 导入跟踪器相关类
 from rasa.shared.core.trackers import (
-    ActionExecuted,
-    DialogueStateTracker,
-    EventVerbosity,
-    TrackerEventDiffEngine,
+    ActionExecuted,           # 动作执行事件
+    DialogueStateTracker,     # 对话状态跟踪器
+    EventVerbosity,          # 事件详细程度
+    TrackerEventDiffEngine,  # 跟踪器事件差异引擎
 )
+# 导入Rasa异常类
 from rasa.shared.exceptions import ConnectionException, RasaException
+# 导入NLU常量
 from rasa.shared.nlu.constants import INTENT_NAME_KEY
+# 导入端点配置类
 from rasa.utils.endpoints import EndpointConfig
+# 导入SQLAlchemy
 import sqlalchemy as sa
+# 导入SQLAlchemy声明式基类和元类
 from sqlalchemy.ext.declarative import declarative_base, DeclarativeMeta
 
+# 类型检查时的导入，避免循环导入
 if TYPE_CHECKING:
-    import boto3.resources.factory.dynamodb.Table
-    from sqlalchemy.engine.url import URL
-    from sqlalchemy.engine.base import Engine
-    from sqlalchemy.orm import Session, Query
-    from sqlalchemy import Sequence
+    import boto3.resources.factory.dynamodb.Table  # DynamoDB表类型
+    from sqlalchemy.engine.url import URL          # SQLAlchemy URL类型
+    from sqlalchemy.engine.base import Engine      # SQLAlchemy引擎类型
+    from sqlalchemy.orm import Session, Query      # SQLAlchemy会话和查询类型
+    from sqlalchemy import Sequence                # SQLAlchemy序列类型
 
+# 创建日志记录器
 logger = logging.getLogger(__name__)
 
-# default values of PostgreSQL pool size and max overflow
+# PostgreSQL连接池的默认最大溢出连接数
 POSTGRESQL_DEFAULT_MAX_OVERFLOW = 100
+# PostgreSQL连接池的默认大小
 POSTGRESQL_DEFAULT_POOL_SIZE = 50
 
-# default value for key prefix in RedisTrackerStore
+# Redis跟踪器存储的默认键前缀
 DEFAULT_REDIS_TRACKER_STORE_KEY_PREFIX = "tracker:"
 
 
 def check_if_tracker_store_async(tracker_store: TrackerStore) -> bool:
-    """Evaluates if a tracker store object is async based on implementation of methods.
+    """检查跟踪器存储对象是否基于方法实现为异步的。
 
-    :param tracker_store: tracker store object we're evaluating
-    :return: if the tracker store correctly implements all async methods
+    :param tracker_store: 我们要评估的跟踪器存储对象
+    :return: 如果跟踪器存储正确实现了所有异步方法则返回True
     """
+    # 检查所有异步方法是否都是协程函数
     return all(
         iscoroutinefunction(getattr(tracker_store, method))
         for method in _get_async_tracker_store_methods()
@@ -83,6 +115,10 @@ def check_if_tracker_store_async(tracker_store: TrackerStore) -> bool:
 
 
 def _get_async_tracker_store_methods() -> List[str]:
+    """获取TrackerStore类中所有异步方法的列表。
+    
+    :return: 异步方法名称的列表
+    """
     return [
         attribute
         for attribute in dir(TrackerStore)
@@ -91,45 +127,49 @@ def _get_async_tracker_store_methods() -> List[str]:
 
 
 class TrackerDeserialisationException(RasaException):
-    """Raised when an error is encountered while deserialising a tracker."""
+    """在反序列化跟踪器时遇到错误时抛出的异常。"""
 
 
+# 定义序列化类型的类型变量
 SerializationType = TypeVar("SerializationType")
 
 
 class SerializedTrackerRepresentation(Generic[SerializationType]):
-    """Mixin class for specifying different serialization methods per tracker store."""
+    """为每个跟踪器存储指定不同序列化方法的混入类。"""
 
     @staticmethod
     def serialise_tracker(tracker: DialogueStateTracker) -> SerializationType:
-        """Requires implementation to return representation of tracker."""
+        """需要实现以返回跟踪器的表示形式。"""
         raise NotImplementedError()
 
 
 class SerializedTrackerAsText(SerializedTrackerRepresentation[Text]):
-    """Mixin class that returns the serialized tracker as string."""
+    """将序列化的跟踪器作为字符串返回的混入类。"""
 
     @staticmethod
     def serialise_tracker(tracker: DialogueStateTracker) -> Text:
-        """Serializes the tracker, returns representation of the tracker."""
+        """序列化跟踪器，返回跟踪器的表示形式。"""
+        # 将跟踪器转换为对话对象
         dialogue = tracker.as_dialogue()
-
+        # 将对话对象转换为字典并序列化为JSON字符串
         return json.dumps(dialogue.as_dict())
 
 
 class SerializedTrackerAsDict(SerializedTrackerRepresentation[Dict]):
-    """Mixin class that returns the serialized tracker as dictionary."""
+    """将序列化的跟踪器作为字典返回的混入类。"""
 
     @staticmethod
     def serialise_tracker(tracker: DialogueStateTracker) -> Dict:
-        """Serializes the tracker, returns representation of the tracker."""
+        """序列化跟踪器，返回跟踪器的表示形式。"""
+        # 将跟踪器转换为对话对象并获取字典表示
         d = tracker.as_dialogue().as_dict()
+        # 添加发送者ID到字典中
         d.update({"sender_id": tracker.sender_id})
         return d
 
 
 class TrackerStore:
-    """Represents common behavior and interface for all `TrackerStore`s."""
+    """表示所有`TrackerStore`的通用行为和接口。"""
 
     def __init__(
         self,
@@ -137,16 +177,18 @@ class TrackerStore:
         event_broker: Optional[EventBroker] = None,
         **kwargs: Dict[Text, Any],
     ) -> None:
-        """Create a TrackerStore.
+        """创建跟踪器存储。
 
         Args:
-            domain: The `Domain` to initialize the `DialogueStateTracker`.
-            event_broker: An event broker to publish any new events to another
-                destination.
-            kwargs: Additional kwargs.
+            domain: 用于初始化`DialogueStateTracker`的领域。
+            event_broker: 用于将任何新事件发布到另一个目的地的事件代理。
+            kwargs: 额外的关键字参数。
         """
+        # 设置领域，如果为None则使用空领域
         self._domain = domain or Domain.empty()
+        # 设置事件代理
         self.event_broker = event_broker
+        # 设置最大事件历史记录数量
         self.max_event_history: Optional[int] = None
 
     @staticmethod
@@ -155,21 +197,25 @@ class TrackerStore:
         domain: Optional[Domain] = None,
         event_broker: Optional[EventBroker] = None,
     ) -> TrackerStore:
-        """Factory to create a tracker store."""
+        """创建跟踪器存储的工厂方法。"""
+        # 如果对象已经是TrackerStore实例，直接返回
         if isinstance(obj, TrackerStore):
             return obj
 
+        # 导入可能需要的异常类
         from botocore.exceptions import BotoCoreError
         import pymongo.errors
         import sqlalchemy.exc
 
         try:
+            # 尝试通过插件管理器创建跟踪器存储
             _tracker_store = plugin_manager().hook.create_tracker_store(
                 endpoint_config=obj,
                 domain=domain,
                 event_broker=event_broker,
             )
 
+            # 如果插件管理器没有创建，则使用默认创建方法
             tracker_store = (
                 _tracker_store
                 if _tracker_store
@@ -178,12 +224,13 @@ class TrackerStore:
 
             return tracker_store
         except (
-            BotoCoreError,
-            pymongo.errors.ConnectionFailure,
-            sqlalchemy.exc.OperationalError,
-            ConnectionError,
-            pymongo.errors.OperationFailure,
+            BotoCoreError,                    # DynamoDB相关错误
+            pymongo.errors.ConnectionFailure, # MongoDB连接失败
+            sqlalchemy.exc.OperationalError,  # SQL操作错误
+            ConnectionError,                  # 通用连接错误
+            pymongo.errors.OperationFailure,  # MongoDB操作失败
         ) as error:
+            # 抛出连接异常
             raise ConnectionException(
                 "Cannot connect to tracker store." + str(error)
             ) from error
@@ -194,17 +241,20 @@ class TrackerStore:
         max_event_history: Optional[int] = None,
         append_action_listen: bool = True,
     ) -> "DialogueStateTracker":
-        """Returns tracker or creates one if the retrieval returns None.
+        """返回跟踪器，如果检索返回None则创建一个。
 
         Args:
-            sender_id: Conversation ID associated with the requested tracker.
-            max_event_history: Value to update the tracker store's max event history to.
-            append_action_listen: Whether or not to append an initial `action_listen`.
+            sender_id: 与请求的跟踪器关联的对话ID。
+            max_event_history: 要更新跟踪器存储的最大事件历史记录的值。
+            append_action_listen: 是否追加初始的`action_listen`。
         """
+        # 更新最大事件历史记录
         self.max_event_history = max_event_history
 
+        # 尝试检索现有的跟踪器
         tracker = await self.retrieve(sender_id)
 
+        # 如果跟踪器不存在，创建一个新的
         if tracker is None:
             tracker = await self.create_tracker(
                 sender_id, append_action_listen=append_action_listen
@@ -213,80 +263,81 @@ class TrackerStore:
         return tracker
 
     def init_tracker(self, sender_id: Text) -> "DialogueStateTracker":
-        """Returns a Dialogue State Tracker."""
+        """返回一个对话状态跟踪器。"""
         return DialogueStateTracker(
-            sender_id,
-            self.domain.slots,
-            max_event_history=self.max_event_history,
+            sender_id,                           # 发送者ID
+            self.domain.slots,                   # 领域中的槽位
+            max_event_history=self.max_event_history,  # 最大事件历史记录
         )
 
     async def create_tracker(
         self, sender_id: Text, append_action_listen: bool = True
     ) -> DialogueStateTracker:
-        """Creates a new tracker for `sender_id`.
+        """为`sender_id`创建一个新的跟踪器。
 
-        The tracker begins with a `SessionStarted` event and is initially listening.
+        跟踪器以`SessionStarted`事件开始，最初处于监听状态。
 
         Args:
-            sender_id: Conversation ID associated with the tracker.
-            append_action_listen: Whether or not to append an initial `action_listen`.
+            sender_id: 与跟踪器关联的对话ID。
+            append_action_listen: 是否追加初始的`action_listen`。
 
         Returns:
-            The newly created tracker for `sender_id`.
+            为`sender_id`新创建的跟踪器。
         """
+        # 初始化跟踪器
         tracker = self.init_tracker(sender_id)
 
+        # 如果需要，添加动作监听事件
         if append_action_listen:
             tracker.update(ActionExecuted(ACTION_LISTEN_NAME))
 
+        # 保存跟踪器
         await self.save(tracker)
 
         return tracker
 
     async def save(self, tracker: DialogueStateTracker) -> None:
-        """Save method that will be overridden by specific tracker."""
+        """保存方法，将由特定的跟踪器存储重写。"""
         raise NotImplementedError()
 
     async def exists(self, conversation_id: Text) -> bool:
-        """Checks if tracker exists for the specified ID.
+        """检查指定ID的跟踪器是否存在。
 
-        This method may be overridden by the specific tracker store for
-        faster implementations.
+        此方法可以由特定的跟踪器存储重写以实现更快的实现。
 
         Args:
-            conversation_id: Conversation ID to check if the tracker exists.
+            conversation_id: 要检查跟踪器是否存在的对话ID。
 
         Returns:
-            `True` if the tracker exists, `False` otherwise.
+            如果跟踪器存在则返回`True`，否则返回`False`。
         """
         return await self.retrieve(conversation_id) is not None
 
     async def retrieve(self, sender_id: Text) -> Optional[DialogueStateTracker]:
-        """Retrieves tracker for the latest conversation session.
+        """检索最新对话会话的跟踪器。
 
-        This method will be overridden by the specific tracker store.
+        此方法将由特定的跟踪器存储重写。
 
         Args:
-            sender_id: Conversation ID to fetch the tracker for.
+            sender_id: 要获取跟踪器的对话ID。
 
         Returns:
-            Tracker containing events from the latest conversation sessions.
+            包含最新对话会话事件的跟踪器。
         """
         raise NotImplementedError()
 
     async def retrieve_full_tracker(
         self, conversation_id: Text
     ) -> Optional[DialogueStateTracker]:
-        """Retrieve method for fetching all tracker events across conversation sessions\
-        that may be overridden by specific tracker.
+        """检索跨对话会话的所有跟踪器事件的检索方法，可以由特定跟踪器重写。
 
-        The default implementation uses `self.retrieve()`.
+        默认实现使用`self.retrieve()`。
 
         Args:
-            conversation_id: The conversation ID to retrieve the tracker for.
+            conversation_id: 要检索跟踪器的对话ID。
 
         Returns:
-            The fetch tracker containing all events across session starts.
+            包含跨会话开始的所有事件的获取跟踪器。
         """
         return await self.retrieve(conversation_id)
 
@@ -295,17 +346,19 @@ class TrackerStore:
         sender_id: Text,
         append_action_listen: bool = True,
     ) -> "DialogueStateTracker":
-        """Returns tracker or creates one if the retrieval returns None.
+        """返回跟踪器，如果检索返回None则创建一个。
 
         Args:
-            sender_id: Conversation ID associated with the requested tracker.
-            append_action_listen: Whether to append an initial `action_listen`.
+            sender_id: 与请求的跟踪器关联的对话ID。
+            append_action_listen: 是否追加初始的`action_listen`。
 
         Returns:
-            The tracker for the conversation ID.
+            对话ID的跟踪器。
         """
+        # 检索完整跟踪器
         tracker = await self.retrieve_full_tracker(sender_id)
 
+        # 如果跟踪器不存在，创建一个新的
         if tracker is None:
             tracker = await self.create_tracker(
                 sender_id, append_action_listen=append_action_listen
@@ -314,14 +367,18 @@ class TrackerStore:
         return tracker
 
     async def stream_events(self, tracker: DialogueStateTracker) -> None:
-        """Streams events to a message broker."""
+        """将事件流式传输到消息代理。"""
+        # 如果没有配置事件代理，跳过流式传输
         if self.event_broker is None:
             logger.debug("No event broker configured. Skipping streaming events.")
             return None
 
+        # 获取旧跟踪器以计算差异
         old_tracker = await self.retrieve(tracker.sender_id)
+        # 计算新事件
         new_events = TrackerEventDiffEngine.event_difference(old_tracker, tracker)
 
+        # 流式传输新事件
         await self._stream_new_events(self.event_broker, new_events, tracker.sender_id)
 
     async def _stream_new_events(
@@ -330,47 +387,53 @@ class TrackerStore:
         new_events: List[Event],
         sender_id: Text,
     ) -> None:
-        """Publishes new tracker events to a message broker."""
+        """将新的跟踪器事件发布到消息代理。"""
+        # 遍历所有新事件并发布
         for event in new_events:
             body = {"sender_id": sender_id}
             body.update(event.as_dict())
             event_broker.publish(body)
 
     async def keys(self) -> Iterable[Text]:
-        """Returns the set of values for the tracker store's primary key."""
+        """返回跟踪器存储主键的值集合。"""
         raise NotImplementedError()
 
     def deserialise_tracker(
         self, sender_id: Text, serialised_tracker: Union[Text, bytes]
     ) -> Optional[DialogueStateTracker]:
-        """Deserializes the tracker and returns it."""
+        """反序列化跟踪器并返回它。"""
+        # 初始化跟踪器
         tracker = self.init_tracker(sender_id)
 
         try:
+            # 从JSON反序列化对话
             dialogue = Dialogue.from_parameters(json.loads(serialised_tracker))
         except UnicodeDecodeError as e:
+            # 抛出反序列化异常
             raise TrackerDeserialisationException(
                 "Tracker cannot be deserialised. "
                 "Trackers must be serialised as json. "
                 "Support for deserialising pickled trackers has been removed."
             ) from e
 
+        # 从对话重新创建跟踪器
         tracker.recreate_from_dialogue(dialogue)
 
         return tracker
 
     @property
     def domain(self) -> Domain:
-        """Returns the domain of the tracker store."""
+        """返回跟踪器存储的领域。"""
         return self._domain
 
     @domain.setter
     def domain(self, domain: Optional[Domain]) -> None:
+        """设置跟踪器存储的领域。"""
         self._domain = domain or Domain.empty()
 
 
 class InMemoryTrackerStore(TrackerStore, SerializedTrackerAsText):
-    """Stores conversation history in memory."""
+    """在内存中存储对话历史。"""
 
     def __init__(
         self,
@@ -378,8 +441,10 @@ class InMemoryTrackerStore(TrackerStore, SerializedTrackerAsText):
         event_broker: Optional[EventBroker] = None,
         **kwargs: Dict[Text, Any],
     ) -> None:
-        """Initializes the tracker store."""
+        """初始化跟踪器存储。"""
+        # 创建内存存储字典
         self.store: Dict[Text, Text] = {}
+        # 调用父类初始化
         super().__init__(domain, event_broker, **kwargs)
 
     async def save(self, tracker: DialogueStateTracker) -> None:

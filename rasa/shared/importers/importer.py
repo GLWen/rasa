@@ -21,11 +21,19 @@ from rasa.shared.nlu.training_data.training_data import TrainingData
 from rasa.shared.nlu.constants import ENTITIES, ACTION_NAME
 from rasa.shared.core.domain import IS_RETRIEVAL_INTENT_KEY
 
+# =============================================================================
+# 训练数据导入器模块 - 提供多种训练数据导入机制的统一接口
+# =============================================================================
+
 logger = logging.getLogger(__name__)
 
 
 class TrainingDataImporter(ABC):
-    """Common interface for different mechanisms to load training data."""
+    """训练数据导入器的通用接口。
+    
+    定义了不同机制加载训练数据的统一接口，
+    包括域、故事、配置和 NLU 数据的加载方法。
+    """
 
     @abstractmethod
     def __init__(
@@ -35,61 +43,72 @@ class TrainingDataImporter(ABC):
         training_data_paths: Optional[Union[List[Text], Text]] = None,
         **kwargs: Any,
     ) -> None:
-        """Initialise the importer."""
+        """初始化导入器。
+        
+        Args:
+            config_file: 配置文件路径
+            domain_path: 域文件路径
+            training_data_paths: 训练数据路径列表或单个路径
+            **kwargs: 其他关键字参数
+        """
         ...
 
     @abstractmethod
     def get_domain(self) -> Domain:
-        """Retrieves the domain of the bot.
+        """检索机器人的域。
 
         Returns:
-            Loaded `Domain`.
+            加载的 `Domain` 对象
         """
         ...
 
     @abstractmethod
     def get_stories(self, exclusion_percentage: Optional[int] = None) -> StoryGraph:
-        """Retrieves the stories that should be used for training.
+        """检索用于训练的故事。
 
         Args:
-            exclusion_percentage: Amount of training data that should be excluded.
+            exclusion_percentage: 应排除的训练数据百分比
 
         Returns:
-            `StoryGraph` containing all loaded stories.
+            包含所有加载故事的 `StoryGraph` 对象
         """
         ...
 
     def get_conversation_tests(self) -> StoryGraph:
-        """Retrieves end-to-end conversation stories for testing.
+        """检索用于测试的端到端对话故事。
 
         Returns:
-            `StoryGraph` containing all loaded stories.
+            包含所有加载故事的 `StoryGraph` 对象
         """
         return self.get_stories()
 
     @abstractmethod
     def get_config(self) -> Dict:
-        """Retrieves the configuration that should be used for the training.
+        """检索用于训练的配置。
 
         Returns:
-            The configuration as dictionary.
+            配置字典
         """
         ...
 
     @abstractmethod
     def get_config_file_for_auto_config(self) -> Optional[Text]:
-        """Returns config file path for auto-config only if there is a single one."""
+        """返回自动配置的配置文件路径（仅当存在单个配置文件时）。
+        
+        Returns:
+            配置文件路径，如果不存在或存在多个则返回 None
+        """
         ...
 
     @abstractmethod
     def get_nlu_data(self, language: Optional[Text] = "en") -> TrainingData:
-        """Retrieves the NLU training data that should be used for training.
+        """检索用于训练的 NLU 训练数据。
 
         Args:
-            language: Can be used to only load training data for a certain language.
+            language: 可用于仅加载特定语言的训练数据
 
         Returns:
-            Loaded NLU `TrainingData`.
+            加载的 NLU `TrainingData` 对象
         """
         ...
 
@@ -100,7 +119,17 @@ class TrainingDataImporter(ABC):
         training_data_paths: Optional[List[Text]] = None,
         args: Optional[Dict[Text, Any]] = {},
     ) -> "TrainingDataImporter":
-        """Loads a `TrainingDataImporter` instance from a configuration file."""
+        """从配置文件加载 `TrainingDataImporter` 实例。
+        
+        Args:
+            config_path: 配置文件路径
+            domain_path: 域文件路径
+            training_data_paths: 训练数据路径列表
+            args: 额外参数
+            
+        Returns:
+            配置的 `TrainingDataImporter` 实例
+        """
         config = rasa.shared.utils.io.read_config_file(config_path)
         return TrainingDataImporter.load_from_dict(
             config, config_path, domain_path, training_data_paths, args
@@ -113,9 +142,18 @@ class TrainingDataImporter(ABC):
         training_data_paths: Optional[List[Text]] = None,
         args: Optional[Dict[Text, Any]] = {},
     ) -> "TrainingDataImporter":
-        """Loads core `TrainingDataImporter` instance.
+        """加载核心 `TrainingDataImporter` 实例。
 
-        Instance loaded from configuration file will only read Core training data.
+        从配置文件加载的实例将仅读取 Core 训练数据。
+        
+        Args:
+            config_path: 配置文件路径
+            domain_path: 域文件路径
+            training_data_paths: 训练数据路径列表
+            args: 额外参数
+            
+        Returns:
+            配置的 `TrainingDataImporter` 实例
         """
         importer = TrainingDataImporter.load_from_config(
             config_path, domain_path, training_data_paths, args
@@ -129,17 +167,25 @@ class TrainingDataImporter(ABC):
         training_data_paths: Optional[List[Text]] = None,
         args: Optional[Dict[Text, Any]] = {},
     ) -> "TrainingDataImporter":
-        """Loads nlu `TrainingDataImporter` instance.
+        """加载 NLU `TrainingDataImporter` 实例。
 
-        Instance loaded from configuration file will only read NLU training data.
+        从配置文件加载的实例将仅读取 NLU 训练数据。
+        
+        Args:
+            config_path: 配置文件路径
+            domain_path: 域文件路径
+            training_data_paths: 训练数据路径列表
+            args: 额外参数
+            
+        Returns:
+            配置的 `TrainingDataImporter` 实例
         """
         importer = TrainingDataImporter.load_from_config(
             config_path, domain_path, training_data_paths, args
         )
 
         if isinstance(importer, E2EImporter):
-            # When we only train NLU then there is no need to enrich the data with
-            # E2E data from Core training data.
+            # 当我们仅训练 NLU 时，不需要用 Core 训练数据中的 E2E 数据来丰富数据
             importer = importer.importer
 
         return NluDataImporter(importer)
@@ -152,7 +198,18 @@ class TrainingDataImporter(ABC):
         training_data_paths: Optional[List[Text]] = None,
         args: Optional[Dict[Text, Any]] = {},
     ) -> "TrainingDataImporter":
-        """Loads a `TrainingDataImporter` instance from a dictionary."""
+        """从字典加载 `TrainingDataImporter` 实例。
+        
+        Args:
+            config: 配置字典
+            config_path: 配置文件路径
+            domain_path: 域文件路径
+            training_data_paths: 训练数据路径列表
+            args: 额外参数
+            
+        Returns:
+            配置的 `TrainingDataImporter` 实例
+        """
         from rasa.shared.importers.rasa import RasaFileImporter
 
         config = config or {}
@@ -179,6 +236,18 @@ class TrainingDataImporter(ABC):
         training_data_paths: Optional[List[Text]] = None,
         args: Optional[Dict[Text, Any]] = {},
     ) -> Optional["TrainingDataImporter"]:
+        """从字典配置创建导入器实例。
+        
+        Args:
+            importer_config: 导入器配置字典
+            config_path: 配置文件路径
+            domain_path: 域文件路径
+            training_data_paths: 训练数据路径列表
+            args: 额外参数
+            
+        Returns:
+            配置的导入器实例，如果创建失败则返回 None
+        """
         from rasa.shared.importers.multi_project import MultiProjectImporter
         from rasa.shared.importers.rasa import RasaFileImporter
 
@@ -193,7 +262,7 @@ class TrainingDataImporter(ABC):
                     module_path
                 )
             except (AttributeError, ImportError):
-                logging.warning(f"Importer '{module_path}' not found.")
+                logging.warning(f"导入器 '{module_path}' 未找到。")
                 return None
 
         constructor_arguments = rasa.shared.utils.common.minimal_kwargs(
@@ -208,27 +277,50 @@ class TrainingDataImporter(ABC):
         )
 
     def fingerprint(self) -> Text:
-        """Returns a random fingerprint as data shouldn't be cached."""
+        """返回随机指纹，因为数据不应被缓存。
+        
+        Returns:
+            25 字符的随机字符串
+        """
         return rasa.shared.utils.io.random_string(25)
 
     def __repr__(self) -> Text:
-        """Returns text representation of object."""
+        """返回对象的文本表示。
+        
+        Returns:
+            类名
+        """
         return self.__class__.__name__
 
 
 class NluDataImporter(TrainingDataImporter):
-    """Importer that skips any Core-related file reading."""
+    """跳过任何 Core 相关文件读取的导入器。
+    
+    此类专门用于 NLU 训练，不加载 Core 相关的数据。
+    """
 
     def __init__(self, actual_importer: TrainingDataImporter):
-        """Initializes the NLUDataImporter."""
+        """初始化 NLUDataImporter。
+        
+        Args:
+            actual_importer: 实际的导入器实例
+        """
         self._importer = actual_importer
 
     def get_domain(self) -> Domain:
-        """Retrieves model domain (see parent class for full docstring)."""
+        """检索模型域（参见父类完整文档字符串）。
+        
+        Returns:
+            空域对象
+        """
         return Domain.empty()
 
     def get_stories(self, exclusion_percentage: Optional[int] = None) -> StoryGraph:
-        """Retrieves training stories / rules (see parent class for full docstring)."""
+        """检索训练故事/规则（参见父类完整文档字符串）。
+        
+        Returns:
+            空故事图
+        """
         return StoryGraph([])
 
     def get_conversation_tests(self) -> StoryGraph:
@@ -250,13 +342,18 @@ class NluDataImporter(TrainingDataImporter):
 
 
 class CombinedDataImporter(TrainingDataImporter):
-    """A `TrainingDataImporter` that combines multiple importers.
+    """组合多个导入器的 `TrainingDataImporter`。
 
-    Uses multiple `TrainingDataImporter` instances
-    to load the data as if they were a single instance.
+    使用多个 `TrainingDataImporter` 实例来加载数据，
+    就像它们是单个实例一样。
     """
 
     def __init__(self, importers: List[TrainingDataImporter]):
+        """初始化组合数据导入器。
+        
+        Args:
+            importers: 导入器列表
+        """
         self._importers = importers
 
     @rasa.shared.utils.common.cached_method
@@ -319,15 +416,18 @@ class CombinedDataImporter(TrainingDataImporter):
 
 
 class ResponsesSyncImporter(TrainingDataImporter):
-    """Importer that syncs `responses` between Domain and NLU training data.
+    """在域和 NLU 训练数据之间同步 `responses` 的导入器。
 
-    Synchronizes responses between Domain and NLU and
-    adds retrieval intent properties from the NLU training data
-    back to the Domain.
+    在域和 NLU 之间同步响应，并将 NLU 训练数据中的
+    检索意图属性添加回域。
     """
 
     def __init__(self, importer: TrainingDataImporter):
-        """Initializes the ResponsesSyncImporter."""
+        """初始化响应同步导入器。
+        
+        Args:
+            importer: 底层导入器
+        """
         self._importer = importer
 
     def get_config(self) -> Dict:
@@ -458,14 +558,18 @@ class ResponsesSyncImporter(TrainingDataImporter):
 
 
 class E2EImporter(TrainingDataImporter):
-    """Importer with the following functionality.
+    """具有以下功能的导入器：
 
-    - enhances the NLU training data with actions / user messages from the stories.
-    - adds potential end-to-end bot messages from stories as actions to the domain
+    - 用故事中的动作/用户消息增强 NLU 训练数据
+    - 将故事中潜在的端到端机器人消息作为动作添加到域中
     """
 
     def __init__(self, importer: TrainingDataImporter) -> None:
-        """Initializes the E2EImporter."""
+        """初始化 E2E 导入器。
+        
+        Args:
+            importer: 底层导入器
+        """
         self.importer = importer
 
     @rasa.shared.utils.common.cached_method

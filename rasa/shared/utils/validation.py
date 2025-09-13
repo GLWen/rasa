@@ -23,13 +23,17 @@ from rasa.shared.constants import (
     RESPONSES_SCHEMA_FILE,
 )
 
+# =============================================================================
+# 数据验证模块 - 提供 YAML 和 JSON Schema 验证功能
+# =============================================================================
+
 logger = logging.getLogger(__name__)
 
-KEY_TRAINING_DATA_FORMAT_VERSION = "version"
+KEY_TRAINING_DATA_FORMAT_VERSION = "version"  # 训练数据格式版本键名
 
 
 class YamlValidationException(YamlException, ValueError):
-    """Raised if a yaml file does not correspond to the expected schema."""
+    """当 YAML 文件不符合预期模式时抛出的异常。"""
 
     def __init__(
         self,
@@ -38,13 +42,13 @@ class YamlValidationException(YamlException, ValueError):
         filename: Optional[Text] = None,
         content: Any = None,
     ) -> None:
-        """Create The Error.
+        """创建错误实例。
 
         Args:
-            message: error message
-            validation_errors: validation errors
-            filename: name of the file which was validated
-            content: yaml content loaded from the file (used for line information)
+            message: 错误消息
+            validation_errors: 验证错误列表
+            filename: 被验证的文件名
+            content: 从文件加载的 YAML 内容（用于行信息）
         """
         super(YamlValidationException, self).__init__(filename)
 
@@ -53,11 +57,12 @@ class YamlValidationException(YamlException, ValueError):
         self.content = content
 
     def __str__(self) -> Text:
+        """返回格式化的错误消息。"""
         msg = ""
         if self.filename:
-            msg += f"Failed to validate '{self.filename}'. "
+            msg += f"验证 '{self.filename}' 失败。 "
         else:
-            msg += "Failed to validate YAML. "
+            msg += "验证 YAML 失败。 "
         msg += self.message
         if self.validation_errors:
             unique_errors = {}
@@ -65,9 +70,9 @@ class YamlValidationException(YamlException, ValueError):
                 line_number = self._line_number_for_path(self.content, error.path)
 
                 if line_number and self.filename:
-                    error_representation = f"  in {self.filename}:{line_number}:\n"
+                    error_representation = f"  在 {self.filename}:{line_number}:\n"
                 elif line_number:
-                    error_representation = f"  in Line {line_number}:\n"
+                    error_representation = f"  在第 {line_number} 行:\n"
                 else:
                     error_representation = ""
 
@@ -78,21 +83,20 @@ class YamlValidationException(YamlException, ValueError):
         return msg
 
     def _line_number_for_path(self, current: Any, path: Text) -> Optional[int]:
-        """Get line number for a yaml path in the current content.
+        """获取当前内容中 YAML 路径的行号。
 
-        Implemented using recursion: algorithm goes down the path navigating to the
-        leaf in the YAML tree. Unfortunately, not all nodes returned from the
-        ruamel yaml parser have line numbers attached (arrays have them, dicts have
-        them), e.g. strings don't have attached line numbers.
-        If we arrive at a node that has no line number attached, we'll return the
-        line number of the parent - that is as close as it gets.
+        使用递归实现：算法沿着路径导航到 YAML 树中的叶子节点。
+        不幸的是，并非所有从 ruamel yaml 解析器返回的节点都有附加的行号
+        （数组有，字典有），例如字符串没有附加的行号。
+        如果我们到达一个没有附加行号的节点，我们将返回父节点的行号 - 
+        这是最接近的。
 
         Args:
-            current: current content
-            path: path to traverse within the content
+            current: 当前内容
+            path: 在内容中遍历的路径
 
         Returns:
-            the line number of the path in the content.
+            内容中路径的行号
         """
         if not current:
             return None
@@ -117,16 +121,19 @@ class YamlValidationException(YamlException, ValueError):
         return self._line_number_for_path(current, tail) or this_line
 
 
+# =============================================================================
+# YAML Schema 验证函数
+# =============================================================================
+
 def validate_yaml_schema(
     yaml_file_content: Text, schema_path: Text, package_name: Text = PACKAGE_NAME
 ) -> None:
-    """Validate yaml content.
+    """验证 YAML 内容。
 
     Args:
-        yaml_file_content: the content of the yaml file to be validated
-        schema_path: the schema of the yaml file
-        package_name: the name of the package the schema is located in. defaults
-            to `rasa`.
+        yaml_file_content: 要验证的 YAML 文件内容
+        schema_path: YAML 文件的模式
+        package_name: 模式所在包的名称，默认为 `rasa`
     """
     from pykwalify.core import Core
     from pykwalify.errors import SchemaError
@@ -138,11 +145,9 @@ def validate_yaml_schema(
     log.setLevel(logging.CRITICAL)
 
     try:
-        # we need "rt" since
-        # it will add meta information to the parsed output. this meta information
-        # will include e.g. at which line an object was parsed. this is very
-        # helpful when we validate files later on and want to point the user to the
-        # right line
+        # 我们需要 "rt" 因为它会向解析输出添加元信息。
+        # 这个元信息将包括例如对象被解析的行号。
+        # 当我们稍后验证文件并想要指向用户正确的行时，这非常有用
         source_data = rasa.shared.utils.io.read_yaml(
             yaml_file_content, reader_type=["safe", "rt"]
         )
@@ -157,8 +162,8 @@ def validate_yaml_schema(
         PACKAGE_NAME, SCHEMA_EXTENSIONS_FILE
     )
 
-    # Load schema content using our YAML loader as `pykwalify` uses a global instance
-    # which can fail when used concurrently
+    # 使用我们的 YAML 加载器加载模式内容，因为 `pykwalify` 使用全局实例
+    # 在并发使用时可能会失败
     schema_content = rasa.shared.utils.io.read_yaml_file(schema_file)
     schema_utils_content = rasa.shared.utils.io.read_yaml_file(schema_utils_file)
     schema_content = dict(schema_content, **schema_utils_content)
@@ -173,9 +178,7 @@ def validate_yaml_schema(
         c.validate(raise_exception=True)
     except SchemaError:
         raise YamlValidationException(
-            "Please make sure the file is correct and all "
-            "mandatory parameters are specified. Here are the errors "
-            "found during validation",
+            "请确保文件正确且所有必需参数都已指定。以下是验证过程中发现的错误",
             c.errors,
             content=source_data,
         )

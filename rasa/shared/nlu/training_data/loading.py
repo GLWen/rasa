@@ -15,20 +15,25 @@ from rasa.shared.nlu.training_data.formats.dialogflow import (
 )
 from rasa.shared.nlu.training_data.training_data import TrainingData
 
+# =============================================================================
+# 训练数据加载模块 - 提供多种格式训练数据的加载和格式识别功能
+# =============================================================================
+
 if typing.TYPE_CHECKING:
     from rasa.shared.nlu.training_data.formats.readerwriter import TrainingDataReader
 
 logger = logging.getLogger(__name__)
 
-# Different supported file formats and their identifier
-WIT = "wit"
-LUIS = "luis"
-RASA = "rasa_nlu"
-RASA_YAML = "rasa_yml"
-UNK = "unk"
-DIALOGFLOW_RELEVANT = {DIALOGFLOW_ENTITIES, DIALOGFLOW_INTENT}
+# 不同支持的文件格式及其标识符
+WIT = "wit"  # Wit.ai 格式
+LUIS = "luis"  # Microsoft LUIS 格式
+RASA = "rasa_nlu"  # Rasa NLU JSON 格式
+RASA_YAML = "rasa_yml"  # Rasa YAML 格式
+UNK = "unk"  # 未知格式
+DIALOGFLOW_RELEVANT = {DIALOGFLOW_ENTITIES, DIALOGFLOW_INTENT}  # Dialogflow 相关格式
 
 _json_format_heuristics: Dict[Text, Callable[[Any, Text], bool]] = {
+    # JSON 格式启发式规则字典，用于识别不同的训练数据格式
     WIT: lambda js, fn: "utterances" in js and "luis_schema_version" not in js,
     LUIS: lambda js, fn: "luis_schema_version" in js,
     RASA: lambda js, fn: "rasa_nlu_data" in js,
@@ -42,11 +47,22 @@ _json_format_heuristics: Dict[Text, Callable[[Any, Text], bool]] = {
 
 
 def load_data(resource_name: Text, language: Optional[Text] = "en") -> "TrainingData":
-    """Load training data from disk.
+    """从磁盘加载训练数据。
 
-    Merges them if loaded from disk and multiple files are found."""
+    如果从磁盘加载并找到多个文件，则合并它们。
+    
+    Args:
+        resource_name: 资源名称（文件或目录路径）
+        language: 语言代码，默认为 "en"
+        
+    Returns:
+        合并后的训练数据对象
+        
+    Raises:
+        ValueError: 当文件不存在时
+    """
     if not os.path.exists(resource_name):
-        raise ValueError(f"File '{resource_name}' does not exist.")
+        raise ValueError(f"文件 '{resource_name}' 不存在。")
 
     if os.path.isfile(resource_name):
         files = [resource_name]
@@ -66,7 +82,14 @@ def load_data(resource_name: Text, language: Optional[Text] = "en") -> "Training
 
 
 def _reader_factory(fformat: Text) -> Optional["TrainingDataReader"]:
-    """Generates the appropriate reader class based on the file format."""
+    """根据文件格式生成适当的读取器类。
+    
+    Args:
+        fformat: 文件格式标识符
+        
+    Returns:
+        对应的训练数据读取器实例，如果格式不支持则返回 None
+    """
     from rasa.shared.nlu.training_data.formats import (
         RasaYAMLReader,
         WitReader,

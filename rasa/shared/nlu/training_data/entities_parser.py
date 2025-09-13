@@ -15,18 +15,22 @@ from rasa.shared.nlu.constants import (
 from rasa.shared.nlu.training_data.message import Message
 
 
-GROUP_ENTITY_VALUE = "value"
-GROUP_ENTITY_TYPE = "entity"
-GROUP_ENTITY_DICT = "entity_dict"
-GROUP_ENTITY_DICT_LIST = "list_entity_dicts"
-GROUP_ENTITY_TEXT = "entity_text"
-GROUP_COMPLETE_MATCH = 0
+# =============================================================================
+# 正则表达式组名常量 - 定义实体解析中使用的正则表达式组名
+# =============================================================================
+GROUP_ENTITY_VALUE = "value"  # 实体值组名
+GROUP_ENTITY_TYPE = "entity"  # 实体类型组名
+GROUP_ENTITY_DICT = "entity_dict"  # 实体字典组名
+GROUP_ENTITY_DICT_LIST = "list_entity_dicts"  # 实体字典列表组名
+GROUP_ENTITY_TEXT = "entity_text"  # 实体文本组名
+GROUP_COMPLETE_MATCH = 0  # 完整匹配组索引
 
-# regex for: `[entity_text]((entity_type(:entity_synonym)?)|{entity_dict}|[list_entity_dicts])` # noqa: E501
+# 实体标注的正则表达式：`[entity_text]((entity_type(:entity_synonym)?)|{entity_dict}|[list_entity_dicts])`
 ENTITY_REGEX = re.compile(
     r"\[(?P<entity_text>[^\]]+?)\](\((?P<entity>[^:)]+?)(?:\:(?P<value>[^)]+))?\)|\{(?P<entity_dict>[^}]+?)\}|\[(?P<list_entity_dicts>.*?)\])"  # noqa: E501
 )
 
+# 单个实体字典的正则表达式
 SINGLE_ENTITY_DICT = re.compile(r"{(?P<entity_dict>[^}]+?)\}")
 
 logger = logging.getLogger(__name__)

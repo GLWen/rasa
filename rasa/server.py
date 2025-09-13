@@ -1,157 +1,204 @@
-import asyncio
-import concurrent.futures
-import logging
-import multiprocessing
-import os
-import traceback
-from collections import defaultdict
-from functools import reduce, wraps
-from inspect import isawaitable
-from pathlib import Path
-from http import HTTPStatus
-from typing import (
-    Any,
-    Callable,
-    DefaultDict,
-    List,
-    Optional,
-    Text,
-    Union,
-    Dict,
-    TYPE_CHECKING,
-    NoReturn,
-    Coroutine,
+# =============================================================================
+# Rasa HTTP 服务器模块 - 提供 RESTful API 接口
+# =============================================================================
+# 此模块实现了 Rasa 的 HTTP 服务器，提供完整的 RESTful API 接口，
+# 包括对话管理、模型训练、测试、预测等功能。
+
+# 标准库导入
+import asyncio                    # 异步编程支持
+import concurrent.futures         # 并发执行支持
+import logging                    # 日志记录
+import multiprocessing            # 多进程支持
+import os                         # 操作系统接口
+import traceback                  # 异常跟踪
+from collections import defaultdict  # 默认字典
+from functools import reduce, wraps  # 函数工具
+from inspect import isawaitable   # 检查是否可等待
+from pathlib import Path          # 路径处理
+from http import HTTPStatus       # HTTP 状态码
+from typing import (              # 类型提示
+    Any,                          # 任意类型
+    Callable,                     # 可调用类型
+    DefaultDict,                  # 默认字典类型
+    List,                         # 列表类型
+    Optional,                     # 可选类型
+    Text,                         # 文本类型
+    Union,                        # 联合类型
+    Dict,                         # 字典类型
+    TYPE_CHECKING,                # 类型检查标志
+    NoReturn,                     # 无返回值类型
+    Coroutine,                    # 协程类型
 )
 
-import aiohttp
-import jsonschema
-from sanic import Sanic, response
-from sanic.request import Request
-from sanic.response import HTTPResponse
-from sanic_cors import CORS
-from sanic_jwt import Initialize, exceptions
+# 第三方库导入
+import aiohttp                    # 异步 HTTP 客户端
+import jsonschema                 # JSON 模式验证
+from sanic import Sanic, response # Sanic Web 框架
+from sanic.request import Request # Sanic 请求对象
+from sanic.response import HTTPResponse  # Sanic 响应对象
+from sanic_cors import CORS       # CORS 支持
+from sanic_jwt import Initialize, exceptions  # JWT 认证
 
-import rasa
-import rasa.core.utils
-from rasa.nlu.emulators.emulator import Emulator
-import rasa.utils.common
-import rasa.shared.utils.common
-import rasa.shared.utils.io
-import rasa.shared.utils.validation
-import rasa.shared.nlu.training_data.schemas.data_schema
-import rasa.utils.endpoints
-import rasa.utils.io
+# Rasa 内部模块导入
+import rasa  # Rasa 主模块
+import rasa.core.utils  # Core 工具函数
+from rasa.nlu.emulators.emulator import Emulator  # NLU 模拟器基类
+import rasa.utils.common  # 通用工具函数
+import rasa.shared.utils.common  # 共享通用工具
+import rasa.shared.utils.io  # 共享 IO 工具
+import rasa.shared.utils.validation  # 共享验证工具
+import rasa.shared.nlu.training_data.schemas.data_schema  # NLU 数据模式
+import rasa.utils.endpoints  # 端点工具
+import rasa.utils.io  # IO 工具
 from rasa.shared.core.training_data.story_writer.yaml_story_writer import (
-    YAMLStoryWriter,
+    YAMLStoryWriter,  # YAML 故事写入器
 )
-from rasa.shared.importers.importer import TrainingDataImporter
-from rasa.shared.nlu.training_data.formats import RasaYAMLReader
-from rasa.core.constants import DEFAULT_RESPONSE_TIMEOUT
-from rasa.constants import MINIMUM_COMPATIBLE_VERSION
-from rasa.shared.constants import (
-    DOCS_URL_TRAINING_DATA,
-    DOCS_BASE_URL,
-    DEFAULT_SENDER_ID,
-    DEFAULT_MODELS_PATH,
-    TEST_STORIES_FILE_PREFIX,
+from rasa.shared.importers.importer import TrainingDataImporter  # 训练数据导入器
+from rasa.shared.nlu.training_data.formats import RasaYAMLReader  # Rasa YAML 读取器
+from rasa.core.constants import DEFAULT_RESPONSE_TIMEOUT  # 默认响应超时
+from rasa.constants import MINIMUM_COMPATIBLE_VERSION  # 最小兼容版本
+from rasa.shared.constants import (  # 共享常量
+    DOCS_URL_TRAINING_DATA,  # 训练数据文档URL
+    DOCS_BASE_URL,           # 文档基础URL
+    DEFAULT_SENDER_ID,       # 默认发送者ID
+    DEFAULT_MODELS_PATH,     # 默认模型路径
+    TEST_STORIES_FILE_PREFIX,  # 测试故事文件前缀
 )
-from rasa.shared.core.domain import InvalidDomain, Domain
-from rasa.core.agent import Agent
-from rasa.core.channels.channel import (
-    CollectingOutputChannel,
-    OutputChannel,
-    UserMessage,
+from rasa.shared.core.domain import InvalidDomain, Domain  # 域相关类
+from rasa.core.agent import Agent  # 代理类
+from rasa.core.channels.channel import (  # 通道相关类
+    CollectingOutputChannel,  # 收集输出通道
+    OutputChannel,            # 输出通道基类
+    UserMessage,              # 用户消息类
 )
-import rasa.shared.core.events
-from rasa.shared.core.events import Event
-from rasa.core.test import test
-from rasa.utils.common import TempDirectoryPath, get_temp_dir_name
-from rasa.shared.core.trackers import (
-    DialogueStateTracker,
-    EventVerbosity,
+import rasa.shared.core.events  # 共享事件模块
+from rasa.shared.core.events import Event  # 事件基类
+from rasa.core.test import test  # 测试函数
+from rasa.utils.common import TempDirectoryPath, get_temp_dir_name  # 临时目录工具
+from rasa.shared.core.trackers import (  # 跟踪器相关类
+    DialogueStateTracker,  # 对话状态跟踪器
+    EventVerbosity,        # 事件详细程度
 )
-from rasa.core.utils import AvailableEndpoints
-from rasa.nlu.emulators.no_emulator import NoEmulator
-import rasa.nlu.test
-from rasa.nlu.test import CVEvaluationResult
-from rasa.shared.utils.schemas.events import EVENTS_SCHEMA
-from rasa.utils.endpoints import EndpointConfig
+from rasa.core.utils import AvailableEndpoints  # 可用端点
+from rasa.nlu.emulators.no_emulator import NoEmulator  # 无模拟器
+import rasa.nlu.test  # NLU 测试模块
+from rasa.nlu.test import CVEvaluationResult  # 交叉验证评估结果
+from rasa.shared.utils.schemas.events import EVENTS_SCHEMA  # 事件模式
+from rasa.utils.endpoints import EndpointConfig  # 端点配置
 
+# 类型检查导入（避免循环导入）
 if TYPE_CHECKING:
-    from ssl import SSLContext
-    from rasa.core.processor import MessageProcessor
-    from mypy_extensions import Arg, VarArg, KwArg
+    from ssl import SSLContext  # SSL 上下文
+    from rasa.core.processor import MessageProcessor  # 消息处理器
+    from mypy_extensions import Arg, VarArg, KwArg  # MyPy 扩展
 
+    # Sanic 响应类型定义
     SanicResponse = Union[
         response.HTTPResponse, Coroutine[Any, Any, response.HTTPResponse]
     ]
+    # Sanic 视图类型定义
     SanicView = Callable[
         [Arg(Request, "request"), VarArg(), KwArg()],
         Coroutine[Any, Any, SanicResponse],
     ]
 
 
+# 日志记录器
 logger = logging.getLogger(__name__)
 
-JSON_CONTENT_TYPE = "application/json"
-YAML_CONTENT_TYPE = "application/x-yaml"
+# =============================================================================
+# 常量定义
+# =============================================================================
 
-OUTPUT_CHANNEL_QUERY_KEY = "output_channel"
-USE_LATEST_INPUT_CHANNEL_AS_OUTPUT_CHANNEL = "latest"
-EXECUTE_SIDE_EFFECTS_QUERY_KEY = "execute_side_effects"
+# 内容类型常量
+JSON_CONTENT_TYPE = "application/json"  # JSON 内容类型
+YAML_CONTENT_TYPE = "application/x-yaml"  # YAML 内容类型
 
+# 查询参数键常量
+OUTPUT_CHANNEL_QUERY_KEY = "output_channel"  # 输出通道查询键
+USE_LATEST_INPUT_CHANNEL_AS_OUTPUT_CHANNEL = "latest"  # 使用最新输入通道作为输出通道
+EXECUTE_SIDE_EFFECTS_QUERY_KEY = "execute_side_effects"  # 执行副作用查询键
+
+
+# =============================================================================
+# 异常类定义
+# =============================================================================
 
 class ErrorResponse(Exception):
-    """Common exception to handle failing API requests."""
+    """用于处理失败 API 请求的通用异常。
+    
+    此类提供了统一的错误响应格式，包含错误信息、状态码、
+    帮助链接等详细信息。
+    """
 
     def __init__(
         self,
-        status: Union[int, HTTPStatus],
-        reason: Text,
-        message: Text,
-        details: Any = None,
-        help_url: Optional[Text] = None,
+        status: Union[int, HTTPStatus],  # HTTP 状态码
+        reason: Text,                    # 错误原因
+        message: Text,                   # 错误消息
+        details: Any = None,             # 错误详情
+        help_url: Optional[Text] = None, # 帮助链接
     ) -> None:
-        """Creates error.
+        """创建错误响应。
 
         Args:
-            status: The HTTP status code to return.
-            reason: Short summary of the error.
-            message: Detailed explanation of the error.
-            details: Additional details which describe the error. Must be serializable.
-            help_url: URL where users can get further help (e.g. docs).
+            status: 要返回的 HTTP 状态码
+            reason: 错误的简短摘要
+            message: 错误的详细说明
+            details: 描述错误的附加详情。必须可序列化
+            help_url: 用户可以获取进一步帮助的URL（如文档）
         """
+        # 构建错误信息字典
         self.error_info = {
-            "version": rasa.__version__,
-            "status": "failure",
-            "message": message,
-            "reason": reason,
-            "details": details or {},
-            "help": help_url,
-            "code": status,
+            "version": rasa.__version__,  # Rasa 版本
+            "status": "failure",          # 状态
+            "message": message,           # 错误消息
+            "reason": reason,             # 错误原因
+            "details": details or {},     # 错误详情
+            "help": help_url,             # 帮助链接
+            "code": status,               # 状态码
         }
-        self.status = status
-        logger.error(message)
-        super(ErrorResponse, self).__init__()
+        self.status = status  # 设置状态码
+        logger.error(message)  # 记录错误日志
+        super(ErrorResponse, self).__init__()  # 调用父类构造函数
 
+
+# =============================================================================
+# 工具函数
+# =============================================================================
 
 def _docs(sub_url: Text) -> Text:
-    """Create a url to a subpart of the docs."""
-    return DOCS_BASE_URL + sub_url
+    """创建指向文档子部分的URL。
+    
+    Args:
+        sub_url: 文档子路径
+        
+    Returns:
+        完整的文档URL
+    """
+    return DOCS_BASE_URL + sub_url  # 拼接文档基础URL和子路径
 
 
 def ensure_loaded_agent(
     app: Sanic, require_core_is_ready: bool = False
 ) -> Callable[[Callable], Callable[..., Any]]:
-    """Wraps a request handler ensuring there is a loaded and usable agent.
+    """包装请求处理器，确保有已加载且可用的代理。
 
-    Require the agent to have a loaded Core model if `require_core_is_ready` is
-    `True`.
+    如果 `require_core_is_ready` 为 `True`，
+    则要求代理具有已加载的 Core 模型。
+    
+    Args:
+        app: Sanic 应用实例
+        require_core_is_ready: 是否需要 Core 模型就绪
+        
+    Returns:
+        装饰器函数
     """
 
     def decorator(f: Callable) -> Callable:
         @wraps(f)
         def decorated(*args: Any, **kwargs: Any) -> Any:
+            # 检查代理是否已加载且就绪
             # noinspection PyUnresolvedReferences
             if not app.ctx.agent or not app.ctx.agent.is_ready():
                 raise ErrorResponse(
@@ -160,13 +207,13 @@ def ensure_loaded_agent(
                     "No agent loaded. To continue processing, a "
                     "model of a trained agent needs to be loaded.",
                     help_url=_docs("/user-guide/configuring-http-api/"),
-                )
+                )  # 抛出冲突错误
 
-            return f(*args, **kwargs)
+            return f(*args, **kwargs)  # 调用原始函数
 
-        return decorated
+        return decorated  # 返回装饰后的函数
 
-    return decorator
+    return decorator  # 返回装饰器
 
 
 def ensure_conversation_exists() -> Callable[["SanicView"], "SanicView"]:
@@ -279,7 +326,7 @@ def requires_auth(
 def event_verbosity_parameter(
     request: Request, default_verbosity: EventVerbosity
 ) -> EventVerbosity:
-    """Create `EventVerbosity` object using request params if present."""
+    """如果存在请求参数，则使用请求参数创建 `EventVerbosity` 对象。"""
     event_verbosity_str = request.args.get(
         "include_events", default_verbosity.name
     ).upper()
@@ -302,18 +349,17 @@ async def get_test_stories(
     until_time: Optional[float],
     fetch_all_sessions: bool = False,
 ) -> Text:
-    """Retrieves test stories from `processor` for all conversation sessions for
-    `conversation_id`.
+    """从 `processor` 检索 `conversation_id` 的所有对话会话的测试故事。
 
     Args:
-        processor: An instance of `MessageProcessor`.
-        conversation_id: Conversation ID to fetch stories for.
-        until_time: Timestamp up to which to include events.
-        fetch_all_sessions: Whether to fetch stories for all conversation sessions.
-            If `False`, only the last conversation session is retrieved.
+        processor: `MessageProcessor` 的实例
+        conversation_id: 要获取故事的对话ID
+        until_time: 包含事件的时间戳
+        fetch_all_sessions: 是否获取所有对话会话的故事。
+            如果为 `False`，则只检索最后一个对话会话
 
     Returns:
-        The stories for `conversation_id` in test format.
+        `conversation_id` 的测试格式故事
     """
     if fetch_all_sessions:
         trackers = await processor.get_trackers_for_all_conversation_sessions(
@@ -353,16 +399,16 @@ async def update_conversation_with_events(
     domain: Domain,
     events: List[Event],
 ) -> DialogueStateTracker:
-    """Fetches or creates a tracker for `conversation_id` and appends `events` to it.
+    """获取或创建 `conversation_id` 的跟踪器并将 `events` 追加到其中。
 
     Args:
-        conversation_id: The ID of the conversation to update the tracker for.
-        processor: An instance of `MessageProcessor`.
-        domain: The domain associated with the current `Agent`.
-        events: The events to append to the tracker.
+        conversation_id: 要更新跟踪器的对话ID
+        processor: `MessageProcessor` 的实例
+        domain: 与当前 `Agent` 关联的域
+        events: 要追加到跟踪器的事件
 
     Returns:
-        The tracker for `conversation_id` with the updated events.
+        具有更新事件的 `conversation_id` 跟踪器
     """
     if rasa.shared.core.events.do_events_begin_with_session_start(events):
         tracker = await processor.get_tracker(conversation_id)
@@ -376,13 +422,13 @@ async def update_conversation_with_events(
 
 
 def validate_request_body(request: Request, error_message: Text) -> None:
-    """Check if `request` has a body."""
+    """检查 `request` 是否有请求体。"""
     if not request.body:
         raise ErrorResponse(HTTPStatus.BAD_REQUEST, "BadRequest", error_message)
 
 
 def validate_events_in_request_body(request: Request) -> None:
-    """Validates events format in request body."""
+    """验证请求体中的事件格式。"""
     if not isinstance(request.json, list):
         events = [request.json]
     else:
@@ -401,7 +447,7 @@ def validate_events_in_request_body(request: Request) -> None:
 
 
 async def authenticate(_: Request) -> NoReturn:
-    """Callback for authentication failed."""
+    """认证失败的回调函数。"""
     raise exceptions.AuthenticationFailed(
         "Direct JWT authentication not supported. You should already have "
         "a valid JWT from an authentication provider, Rasa will just make "
@@ -415,16 +461,16 @@ def create_ssl_context(
     ssl_ca_file: Optional[Text] = None,
     ssl_password: Optional[Text] = None,
 ) -> Optional["SSLContext"]:
-    """Create an SSL context if a proper certificate is passed.
+    """如果传递了适当的证书，则创建SSL上下文。
 
     Args:
-        ssl_certificate: path to the SSL client certificate
-        ssl_keyfile: path to the SSL key file
-        ssl_ca_file: path to the SSL CA file for verification (optional)
-        ssl_password: SSL private key password (optional)
+        ssl_certificate: SSL客户端证书的路径
+        ssl_keyfile: SSL密钥文件的路径
+        ssl_ca_file: 用于验证的SSL CA文件路径（可选）
+        ssl_password: SSL私钥密码（可选）
 
     Returns:
-        SSL context if a valid certificate chain can be loaded, `None` otherwise.
+        如果可以加载有效的证书链则返回SSL上下文，否则返回 `None`
 
     """
     if ssl_certificate:
@@ -442,9 +488,9 @@ def create_ssl_context(
 
 
 def _create_emulator(mode: Optional[Text]) -> Emulator:
-    """Create emulator for specified mode.
+    """为指定模式创建模拟器。
 
-    If no emulator is specified, we will use the Rasa NLU format.
+    如果没有指定模拟器，我们将使用Rasa NLU格式。
     """
     if mode is None:
         return NoEmulator()
@@ -476,6 +522,17 @@ async def _load_agent(
     remote_storage: Optional[Text] = None,
     endpoints: Optional[AvailableEndpoints] = None,
 ) -> Agent:
+    """加载代理。
+    
+    Args:
+        model_path: 模型路径
+        model_server: 模型服务器配置
+        remote_storage: 远程存储
+        endpoints: 可用端点
+        
+    Returns:
+        加载的代理
+    """
     try:
         loaded_agent = await rasa.core.agent.load_agent(
             model_path=model_path,
@@ -505,7 +562,7 @@ async def _load_agent(
 def configure_cors(
     app: Sanic, cors_origins: Union[Text, List[Text], None] = ""
 ) -> None:
-    """Configure CORS origins for the given app."""
+    """为给定的应用配置CORS源。"""
     # Workaround so that socketio works with requests from other origins.
     # https://github.com/miguelgrinberg/python-socketio/issues/205#issuecomment-493769183
     app.config.CORS_AUTOMATIC_OPTIONS = True
@@ -518,27 +575,27 @@ def configure_cors(
 
 
 def add_root_route(app: Sanic) -> None:
-    """Add '/' route to return hello."""
+    """添加 '/' 路由以返回问候语。"""
 
     @app.get("/")
     async def hello(request: Request) -> HTTPResponse:
-        """Check if the server is running and responds with the version."""
+        """检查服务器是否正在运行并响应版本信息。"""
         return response.text("Hello from Rasa: " + rasa.__version__)
 
 
 def async_if_callback_url(f: Callable[..., Coroutine]) -> Callable:
-    """Decorator to enable async request handling.
+    """启用异步请求处理的装饰器。
 
-    If the incoming HTTP request specified a `callback_url` query parameter, the request
-    will return immediately with a 204 while the actual request response will
-    be sent to the `callback_url`. If an error happens, the error payload will also
-    be sent to the `callback_url`.
+    如果传入的HTTP请求指定了 `callback_url` 查询参数，请求
+    将立即返回204，而实际的请求响应将
+    发送到 `callback_url`。如果发生错误，错误负载也将
+    发送到 `callback_url`。
 
     Args:
-        f: The request handler function which should be decorated.
+        f: 应该被装饰的请求处理函数
 
     Returns:
-        The decorated function.
+        装饰后的函数
     """
 
     @wraps(f)
@@ -589,18 +646,18 @@ def async_if_callback_url(f: Callable[..., Coroutine]) -> Callable:
 
 
 def run_in_thread(f: Callable[..., Coroutine]) -> Callable:
-    """Decorator which runs request on a separate thread.
+    """在单独线程上运行请求的装饰器。
 
-    Some requests (e.g. training or cross-validation) are computional intense requests.
-    This means that they will block the event loop and hence the processing of other
-    requests. This decorator can be used to process these requests on a separate thread
-    to avoid blocking the processing of incoming requests.
+    某些请求（例如训练或交叉验证）是计算密集型请求。
+    这意味着它们将阻塞事件循环，从而阻塞其他
+    请求的处理。此装饰器可用于在单独线程上处理这些请求
+    以避免阻塞传入请求的处理。
 
     Args:
-        f: The request handler function which should be decorated.
+        f: 应该被装饰的请求处理函数
 
     Returns:
-        The decorated function.
+        装饰后的函数
     """
 
     @wraps(f)
@@ -619,13 +676,13 @@ def run_in_thread(f: Callable[..., Coroutine]) -> Callable:
 
 
 def inject_temp_dir(f: Callable[..., Coroutine]) -> Callable:
-    """Decorator to inject a temporary directory before a request and clean up after.
+    """在请求前注入临时目录并在之后清理的装饰器。
 
     Args:
-        f: The request handler function which should be decorated.
+        f: 应该被装饰的请求处理函数
 
     Returns:
-        The decorated function.
+        装饰后的函数
     """
 
     @wraps(f)
@@ -637,153 +694,260 @@ def inject_temp_dir(f: Callable[..., Coroutine]) -> Callable:
     return decorated_function
 
 
+# =============================================================================
+# 主应用创建函数 - 创建和配置 Rasa HTTP 服务器
+# =============================================================================
+
 def create_app(
-    agent: Optional["Agent"] = None,
-    cors_origins: Union[Text, List[Text], None] = "*",
-    auth_token: Optional[Text] = None,
-    response_timeout: int = DEFAULT_RESPONSE_TIMEOUT,
-    jwt_secret: Optional[Text] = None,
-    jwt_private_key: Optional[Text] = None,
-    jwt_method: Text = "HS256",
-    endpoints: Optional[AvailableEndpoints] = None,
+    agent: Optional["Agent"] = None,                    # 可选的代理实例
+    cors_origins: Union[Text, List[Text], None] = "*",  # CORS 源配置，默认为允许所有源
+    auth_token: Optional[Text] = None,                  # 认证令牌
+    response_timeout: int = DEFAULT_RESPONSE_TIMEOUT,   # 响应超时时间
+    jwt_secret: Optional[Text] = None,                  # JWT 密钥
+    jwt_private_key: Optional[Text] = None,             # JWT 私钥
+    jwt_method: Text = "HS256",                         # JWT 算法方法
+    endpoints: Optional[AvailableEndpoints] = None,     # 可用端点配置
 ) -> Sanic:
-    """Class representing a Rasa HTTP server."""
+    """创建和配置 Rasa HTTP 服务器应用。
+    
+    此函数是 Rasa 服务器的核心创建函数，负责初始化 Sanic 应用、
+    配置认证、CORS、错误处理、注册所有 API 端点等。
+    
+    Args:
+        agent: 可选的代理实例，用于处理对话请求
+        cors_origins: CORS 源配置，控制跨域访问
+        auth_token: 简单的认证令牌
+        response_timeout: HTTP 响应超时时间（秒）
+        jwt_secret: JWT 对称密钥
+        jwt_private_key: JWT 非对称私钥
+        jwt_method: JWT 签名算法（HS256、RS256等）
+        endpoints: 可用端点配置
+        
+    Returns:
+        配置完成的 Sanic 应用实例
+    """
+    # 创建 Sanic 应用实例
     app = Sanic("rasa_server")
+    
+    # 设置响应超时配置
     app.config.RESPONSE_TIMEOUT = response_timeout
+    
+    # 配置 CORS（跨域资源共享）
     configure_cors(app, cors_origins)
 
-    # Set up the Sanic-JWT extension
+    # =============================================================================
+    # JWT 认证配置
+    # =============================================================================
+    # 设置 Sanic-JWT 扩展
     if jwt_secret and jwt_method:
-        # `sanic-jwt` depends on having an available event loop when making the call to
-        # `Initialize`. If there is none, the server startup will fail with
-        # `There is no current event loop in thread 'MainThread'`.
+        # `sanic-jwt` 在调用 `Initialize` 时需要有一个可用的事件循环。
+        # 如果没有，服务器启动将失败并显示错误：
+        # `There is no current event loop in thread 'MainThread'`
         try:
+            # 尝试获取当前运行的事件循环
             _ = asyncio.get_running_loop()
         except RuntimeError:
+            # 如果没有运行的事件循环，创建一个新的并设置为当前循环
             new_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(new_loop)
 
-        # since we only want to check signatures, we don't actually care
-        # about the JWT method and set the passed secret as either symmetric
-        # or asymmetric key. jwt lib will choose the right one based on method
-        app.config["USE_JWT"] = True
+        # 由于我们只想检查签名，我们实际上不关心
+        # JWT 方法，并将传递的密钥设置为对称或非对称密钥。
+        # jwt 库将根据方法选择正确的密钥
+        app.config["USE_JWT"] = True  # 启用 JWT 认证
+        
+        # 初始化 JWT 扩展
         Initialize(
-            app,
-            secret=jwt_secret,
-            private_key=jwt_private_key,
-            authenticate=authenticate,
-            algorithm=jwt_method,
-            user_id="username",
+            app,                        # Sanic 应用实例
+            secret=jwt_secret,          # JWT 密钥
+            private_key=jwt_private_key, # JWT 私钥
+            authenticate=authenticate,   # 认证回调函数
+            algorithm=jwt_method,        # JWT 算法
+            user_id="username",          # 用户ID字段名
         )
 
+    # =============================================================================
+    # 应用上下文初始化
+    # =============================================================================
+    # 将代理实例存储到应用上下文中
     app.ctx.agent = agent
-    # Initialize shared object of type unsigned int for tracking
-    # the number of active training processes
+    
+    # 初始化用于跟踪活跃训练进程数量的共享对象
+    # 使用无符号整数类型，初始值为 0
     app.ctx.active_training_processes = multiprocessing.Value("I", 0)
 
+    # =============================================================================
+    # 错误处理配置
+    # =============================================================================
+    # 注册全局错误处理器，处理 ErrorResponse 异常
     @app.exception(ErrorResponse)
     async def handle_error_response(
         request: Request, exception: ErrorResponse
     ) -> HTTPResponse:
+        # 返回 JSON 格式的错误信息，包含状态码
         return response.json(exception.error_info, status=exception.status)
 
+    # =============================================================================
+    # 路由注册
+    # =============================================================================
+    # 添加根路由（健康检查）
     add_root_route(app)
 
+    # =============================================================================
+    # 系统信息端点
+    # =============================================================================
+    
+    # 版本信息端点 - 获取 Rasa 版本信息
     @app.get("/version")
     async def version(request: Request) -> HTTPResponse:
-        """Respond with the version number of the installed Rasa."""
+        """响应已安装Rasa的版本号。
+        
+        此端点返回当前安装的 Rasa 版本号和最小兼容版本号，
+        用于客户端检查版本兼容性。
+        """
         return response.json(
             {
-                "version": rasa.__version__,
-                "minimum_compatible_version": MINIMUM_COMPATIBLE_VERSION,
+                "version": rasa.__version__,                    # 当前 Rasa 版本
+                "minimum_compatible_version": MINIMUM_COMPATIBLE_VERSION,  # 最小兼容版本
             }
         )
 
+    # 服务器状态端点 - 获取服务器和模型状态信息
     @app.get("/status")
-    @requires_auth(app, auth_token)
-    @ensure_loaded_agent(app)
+    @requires_auth(app, auth_token)      # 需要认证
+    @ensure_loaded_agent(app)            # 确保代理已加载
     async def status(request: Request) -> HTTPResponse:
-        """Respond with the model name and the fingerprint of that model."""
+        """响应模型名称和该模型的指纹。
+        
+        此端点返回当前加载的模型信息、模型ID和活跃训练任务数量，
+        用于监控服务器状态和模型状态。
+        """
         return response.json(
             {
-                "model_file": app.ctx.agent.processor.model_filename,
-                "model_id": app.ctx.agent.model_id,
-                "num_active_training_jobs": app.ctx.active_training_processes.value,
+                "model_file": app.ctx.agent.processor.model_filename,  # 模型文件名
+                "model_id": app.ctx.agent.model_id,                     # 模型ID
+                "num_active_training_jobs": app.ctx.active_training_processes.value,  # 活跃训练任务数
             }
         )
 
+    # =============================================================================
+    # 对话管理端点
+    # =============================================================================
+    
+    # 获取对话跟踪器端点 - 获取指定对话的跟踪器状态
     @app.get("/conversations/<conversation_id:path>/tracker")
-    @requires_auth(app, auth_token)
-    @ensure_loaded_agent(app)
+    @requires_auth(app, auth_token)      # 需要认证
+    @ensure_loaded_agent(app)            # 确保代理已加载
     async def retrieve_tracker(request: Request, conversation_id: Text) -> HTTPResponse:
-        """Get a dump of a conversation's tracker including its events."""
+        """获取对话跟踪器的转储，包括其事件。
+        
+        此端点返回指定对话的完整跟踪器状态，包括所有事件、
+        槽位值、活跃循环等信息。支持时间过滤和详细程度控制。
+        """
+        # 获取事件详细程度参数，默认为重启后
         verbosity = event_verbosity_parameter(request, EventVerbosity.AFTER_RESTART)
+        # 获取时间过滤参数
         until_time = rasa.utils.endpoints.float_arg(request, "until")
 
+        # 获取完整的对话跟踪器（包含初始会话）
         tracker = await app.ctx.agent.processor.fetch_full_tracker_with_initial_session(
             conversation_id,
-            output_channel=CollectingOutputChannel(),
+            output_channel=CollectingOutputChannel(),  # 使用收集输出通道
         )
 
         try:
+            # 如果指定了时间过滤，则回退到指定时间
             if until_time is not None:
                 tracker = tracker.travel_back_in_time(until_time)
 
+            # 获取当前状态并返回
             state = tracker.current_state(verbosity)
             return response.json(state)
         except Exception as e:
+            # 记录调试信息
             logger.debug(traceback.format_exc())
+            # 抛出内部服务器错误
             raise ErrorResponse(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 "ConversationError",
                 f"An unexpected error occurred. Error: {e}",
             )
 
+    # 追加事件端点 - 向对话状态追加事件列表
     @app.post("/conversations/<conversation_id:path>/tracker/events")
-    @requires_auth(app, auth_token)
-    @ensure_loaded_agent(app)
+    @requires_auth(app, auth_token)      # 需要认证
+    @ensure_loaded_agent(app)            # 确保代理已加载
     async def append_events(request: Request, conversation_id: Text) -> HTTPResponse:
-        """Append a list of events to the state of a conversation."""
+        """将事件列表追加到对话状态。
+        
+        此端点允许向指定对话的跟踪器追加新的事件，
+        支持执行副作用和保存跟踪器状态。
+        """
+        # 验证请求体中的事件格式
         validate_events_in_request_body(request)
 
+        # 获取事件详细程度参数
         verbosity = event_verbosity_parameter(request, EventVerbosity.AFTER_RESTART)
 
         try:
+            # 使用锁确保对话状态的原子性操作
             async with app.ctx.agent.lock_store.lock(conversation_id):
                 processor = app.ctx.agent.processor
+                # 从请求体中提取事件
                 events = _get_events_from_request_body(request)
 
+                # 更新对话状态并追加事件
                 tracker = await update_conversation_with_events(
                     conversation_id, processor, app.ctx.agent.domain, events
                 )
 
+                # 获取输出通道
                 output_channel = _get_output_channel(request, tracker)
 
+                # 如果请求指定执行副作用，则执行
                 if rasa.utils.endpoints.bool_arg(
                     request, EXECUTE_SIDE_EFFECTS_QUERY_KEY, False
                 ):
                     await processor.execute_side_effects(
                         events, tracker, output_channel
                     )
+                # 保存更新后的跟踪器状态
                 await app.ctx.agent.tracker_store.save(tracker)
+            # 返回更新后的跟踪器状态
             return response.json(tracker.current_state(verbosity))
         except Exception as e:
+            # 记录调试信息
             logger.debug(traceback.format_exc())
+            # 抛出内部服务器错误
             raise ErrorResponse(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 "ConversationError",
                 f"An unexpected error occurred. Error: {e}",
             )
 
+    # =============================================================================
+    # 辅助函数
+    # =============================================================================
+    
     def _get_events_from_request_body(request: Request) -> List[Event]:
+        """从请求体中提取事件列表。
+        
+        此函数负责解析请求体中的事件数据，支持单个事件或事件列表，
+        并验证事件的有效性。
+        """
+        # 获取请求体中的JSON数据
         events = request.json
 
+        # 如果事件不是列表，则转换为列表
         if not isinstance(events, list):
             events = [events]
 
+        # 将每个事件字典转换为Event对象
         events = [Event.from_parameters(event) for event in events]
+        # 过滤掉无效的事件（None值）
         events = [event for event in events if event]
 
+        # 如果没有有效的事件，抛出错误
         if not events:
             rasa.shared.utils.io.raise_warning(
                 f"Append event called, but could not extract a valid event. "
@@ -798,54 +962,77 @@ def create_app(
 
         return events
 
+    # 替换事件端点 - 使用事件列表完全替换对话跟踪器状态
     @app.put("/conversations/<conversation_id:path>/tracker/events")
-    @requires_auth(app, auth_token)
-    @ensure_loaded_agent(app)
+    @requires_auth(app, auth_token)      # 需要认证
+    @ensure_loaded_agent(app)            # 确保代理已加载
     async def replace_events(request: Request, conversation_id: Text) -> HTTPResponse:
-        """Use a list of events to set a conversations tracker to a state."""
+        """使用事件列表将对话跟踪器设置为状态。
+        
+        此端点允许完全替换指定对话的跟踪器状态，
+        而不是追加事件。会覆盖现有的跟踪器。
+        """
+        # 验证请求体中的事件格式
         validate_events_in_request_body(request)
 
+        # 获取事件详细程度参数
         verbosity = event_verbosity_parameter(request, EventVerbosity.AFTER_RESTART)
 
         try:
+            # 使用锁确保对话状态的原子性操作
             async with app.ctx.agent.lock_store.lock(conversation_id):
+                # 从请求体中的事件列表创建新的跟踪器
                 tracker = DialogueStateTracker.from_dict(
                     conversation_id, request.json, app.ctx.agent.domain.slots
                 )
 
-                # will override an existing tracker with the same id!
+                # 保存新的跟踪器状态（会覆盖具有相同ID的现有跟踪器！）
                 await app.ctx.agent.tracker_store.save(tracker)
 
+            # 返回新跟踪器的当前状态
             return response.json(tracker.current_state(verbosity))
         except Exception as e:
+            # 记录调试信息
             logger.debug(traceback.format_exc())
+            # 抛出内部服务器错误
             raise ErrorResponse(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 "ConversationError",
                 f"An unexpected error occurred. Error: {e}",
             )
 
+    # 获取对话故事端点 - 获取对话的端到端故事
     @app.get("/conversations/<conversation_id:path>/story")
-    @requires_auth(app, auth_token)
-    @ensure_loaded_agent(app)
-    @ensure_conversation_exists()
+    @requires_auth(app, auth_token)      # 需要认证
+    @ensure_loaded_agent(app)            # 确保代理已加载
+    @ensure_conversation_exists()        # 确保对话存在
     async def retrieve_story(request: Request, conversation_id: Text) -> HTTPResponse:
-        """Get an end-to-end story corresponding to this conversation."""
+        """获取与此对话对应的端到端故事。
+        
+        此端点返回指定对话的端到端故事格式，
+        支持时间过滤和会话选择。
+        """
+        # 获取时间过滤参数
         until_time = rasa.utils.endpoints.float_arg(request, "until")
+        # 获取是否获取所有会话的参数
         fetch_all_sessions = rasa.utils.endpoints.bool_arg(
             request, "all_sessions", default=False
         )
 
         try:
+            # 获取测试故事
             stories = await get_test_stories(
                 app.ctx.agent.processor,
                 conversation_id,
                 until_time,
                 fetch_all_sessions=fetch_all_sessions,
             )
+            # 返回文本格式的故事
             return response.text(stories)
         except Exception as e:
+            # 记录调试信息
             logger.debug(traceback.format_exc())
+            # 抛出内部服务器错误
             raise ErrorResponse(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 "ConversationError",
@@ -971,20 +1158,29 @@ def create_app(
 
         return response.json(response_body)
 
+    # 预测下一个动作端点 - 预测对话的下一个动作
     @app.post("/conversations/<conversation_id:path>/predict")
-    @requires_auth(app, auth_token)
-    @ensure_loaded_agent(app)
-    @ensure_conversation_exists()
+    @requires_auth(app, auth_token)      # 需要认证
+    @ensure_loaded_agent(app)            # 确保代理已加载
+    @ensure_conversation_exists()        # 确保对话存在
     async def predict(request: Request, conversation_id: Text) -> HTTPResponse:
+        """预测对话的下一个动作。
+        
+        此端点基于当前对话状态预测下一个应该执行的动作，
+        返回动作列表和对应的置信度分数。
+        """
         try:
-            # Fetches the appropriate bot response in a json format
+            # 以JSON格式获取适当的机器人响应
             responses = await app.ctx.agent.predict_next_for_sender_id(conversation_id)
+            # 按分数降序和动作名称排序响应
             responses["scores"] = sorted(
                 responses["scores"], key=lambda k: (-k["score"], k["action"])
             )
             return response.json(responses)
         except Exception as e:
+            # 记录调试信息
             logger.debug(traceback.format_exc())
+            # 抛出内部服务器错误
             raise ErrorResponse(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 "ConversationError",
@@ -1019,6 +1215,7 @@ def create_app(
                 {"parameter": "sender", "in": "body"},
             )
 
+        # TODO: 入口用户发送消息  User -> Send message -> Input Channel -> Rasa Server -> Agent
         user_message = UserMessage(message, None, conversation_id, parse_data)
 
         try:
@@ -1262,7 +1459,7 @@ def create_app(
     @requires_auth(app, auth_token)
     @ensure_loaded_agent(app, require_core_is_ready=True)
     async def tracker_predict(request: Request) -> HTTPResponse:
-        """Given a list of events, predicts the next action."""
+        """给定事件列表，预测下一个动作。"""
         validate_events_in_request_body(request)
 
         verbosity = event_verbosity_parameter(request, EventVerbosity.AFTER_RESTART)
@@ -1307,6 +1504,7 @@ def create_app(
         try:
             data = emulator.normalise_request_json(request.json)
             try:
+                # todo Rasa Server -> Agent
                 parsed_data = await app.ctx.agent.parse_message(data.get("text"))
             except Exception as e:
                 logger.debug(traceback.format_exc())
@@ -1374,7 +1572,7 @@ def create_app(
     @requires_auth(app, auth_token)
     @ensure_loaded_agent(app)
     async def get_domain(request: Request) -> HTTPResponse:
-        """Get current domain in yaml or json format."""
+        """以yaml或json格式获取当前域。"""
         # FIXME: this is a false positive mypy error after upgrading to 0.931
         accepts = request.headers.get("Accept", default=JSON_CONTENT_TYPE)
         if accepts.endswith("json"):
@@ -1397,6 +1595,17 @@ def create_app(
                 f"header.",
             )
 
+    # =============================================================================
+    # 函数结束 - 返回配置完成的 Sanic 应用
+    # =============================================================================
+    # 此时应用已完全配置，包括：
+    # 1. 基础配置（超时、CORS等）
+    # 2. 认证配置（JWT、令牌认证）
+    # 3. 错误处理配置
+    # 4. 所有API端点注册
+    # 5. 应用上下文初始化
+    # 
+    # 返回的应用可以立即用于启动HTTP服务器
     return app
 
 

@@ -15,10 +15,20 @@ from rasa.shared.core.training_data.story_reader.yaml_story_reader import (
     YAMLStoryReader,
 )
 
+# =============================================================================
+# 多项目导入器模块 - 提供从多个项目导入训练数据的功能
+# =============================================================================
+
 logger = logging.getLogger(__name__)
 
 
 class MultiProjectImporter(TrainingDataImporter):
+    """多项目导入器，用于从多个项目导入训练数据。
+    
+    此类允许从多个项目目录导入训练数据，
+    支持递归导入和项目间的数据合并。
+    """
+    
     def __init__(
         self,
         config_file: Text,
@@ -26,6 +36,14 @@ class MultiProjectImporter(TrainingDataImporter):
         training_data_paths: Optional[Union[List[Text], Text]] = None,
         project_directory: Optional[Text] = None,
     ):
+        """初始化多项目导入器。
+        
+        Args:
+            config_file: 配置文件路径
+            domain_path: 域文件路径
+            training_data_paths: 额外的训练数据路径
+            project_directory: 项目目录路径
+        """
         self.config = rasa.shared.utils.io.read_model_configuration(config_file)
         if domain_path:
             self._domain_paths = [domain_path]
@@ -50,7 +68,7 @@ class MultiProjectImporter(TrainingDataImporter):
         self._nlu_paths += extra_nlu_files
 
         logger.debug(
-            "Selected projects: {}".format("".join([f"\n-{i}" for i in self._imports]))
+            "已选择的项目: {}".format("".join([f"\n-{i}" for i in self._imports]))
         )
 
         mark_as_experimental_feature(feature_name="MultiProjectImporter")

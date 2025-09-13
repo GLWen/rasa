@@ -1,155 +1,214 @@
-import abc
-import copy
-import json
-import logging
-import structlog
-import re
-from abc import ABC
+# =============================================================================
+# 事件系统模块 - 定义对话中的各种事件类型
+# =============================================================================
+# 此模块定义了 Rasa Core 中所有的事件类型，包括用户消息、机器人响应、
+# 槽位设置、动作执行等。事件是对话状态跟踪的基础，用于记录对话中
+# 发生的所有重要变化。
 
-import jsonpickle
-import time
-import uuid
-from dateutil import parser
-from datetime import datetime
+# 标准库导入
+import abc                    # 抽象基类支持
+import copy                   # 深拷贝功能
+import json                   # JSON 处理
+import logging                # 日志记录
+import structlog              # 结构化日志
+import re                     # 正则表达式
+from abc import ABC           # 抽象基类
+
+# 第三方库导入
+import jsonpickle             # JSON 序列化库
+import time                   # 时间处理
+import uuid                   # UUID 生成
+from dateutil import parser   # 日期解析
+from datetime import datetime # 日期时间类
+
+# 类型提示导入
 from typing import (
-    List,
-    Dict,
-    Text,
-    Any,
-    Type,
-    Optional,
-    TYPE_CHECKING,
-    Iterable,
-    cast,
-    Tuple,
-    TypeVar,
+    List,                     # 列表类型
+    Dict,                     # 字典类型
+    Text,                     # 文本类型
+    Any,                      # 任意类型
+    Type,                     # 类型类型
+    Optional,                 # 可选类型
+    TYPE_CHECKING,            # 类型检查
+    Iterable,                 # 可迭代类型
+    cast,                     # 类型转换
+    Tuple,                    # 元组类型
+    TypeVar,                  # 类型变量
 )
 
-import rasa.shared.utils.common
-import rasa.shared.utils.io
-from typing import Union
+# Rasa 内部模块导入
+import rasa.shared.utils.common  # 通用工具函数
+import rasa.shared.utils.io      # IO 工具函数
+from typing import Union          # 联合类型
 
-from rasa.shared.constants import DOCS_URL_TRAINING_DATA
+# 常量导入
+from rasa.shared.constants import DOCS_URL_TRAINING_DATA  # 训练数据文档URL
 from rasa.shared.core.constants import (
-    LOOP_NAME,
-    EXTERNAL_MESSAGE_PREFIX,
-    ACTION_NAME_SENDER_ID_CONNECTOR_STR,
-    IS_EXTERNAL,
-    USE_TEXT_FOR_FEATURIZATION,
-    LOOP_INTERRUPTED,
-    ENTITY_LABEL_SEPARATOR,
-    ACTION_SESSION_START_NAME,
-    ACTION_LISTEN_NAME,
+    LOOP_NAME,                        # 循环名称
+    EXTERNAL_MESSAGE_PREFIX,          # 外部消息前缀
+    ACTION_NAME_SENDER_ID_CONNECTOR_STR,  # 动作名称发送者ID连接符
+    IS_EXTERNAL,                      # 是否为外部事件
+    USE_TEXT_FOR_FEATURIZATION,       # 是否使用文本进行特征化
+    LOOP_INTERRUPTED,                 # 循环中断
+    ENTITY_LABEL_SEPARATOR,           # 实体标签分隔符
+    ACTION_SESSION_START_NAME,        # 会话开始动作名称
+    ACTION_LISTEN_NAME,               # 监听动作名称
 )
-from rasa.shared.exceptions import UnsupportedFeatureException
+from rasa.shared.exceptions import UnsupportedFeatureException  # 不支持功能异常
 from rasa.shared.nlu.constants import (
-    ENTITY_ATTRIBUTE_TYPE,
-    INTENT,
-    TEXT,
-    ENTITIES,
-    ENTITY_ATTRIBUTE_VALUE,
-    ACTION_TEXT,
-    ACTION_NAME,
-    INTENT_NAME_KEY,
-    ENTITY_ATTRIBUTE_ROLE,
-    ENTITY_ATTRIBUTE_GROUP,
-    PREDICTED_CONFIDENCE_KEY,
-    INTENT_RANKING_KEY,
-    ENTITY_ATTRIBUTE_TEXT,
-    ENTITY_ATTRIBUTE_START,
-    ENTITY_ATTRIBUTE_CONFIDENCE,
-    ENTITY_ATTRIBUTE_END,
-    FULL_RETRIEVAL_INTENT_NAME_KEY,
+    ENTITY_ATTRIBUTE_TYPE,            # 实体属性类型
+    INTENT,                           # 意图
+    TEXT,                             # 文本
+    ENTITIES,                         # 实体
+    ENTITY_ATTRIBUTE_VALUE,           # 实体属性值
+    ACTION_TEXT,                      # 动作文本
+    ACTION_NAME,                      # 动作名称
+    INTENT_NAME_KEY,                  # 意图名称键
+    ENTITY_ATTRIBUTE_ROLE,            # 实体属性角色
+    ENTITY_ATTRIBUTE_GROUP,           # 实体属性组
+    PREDICTED_CONFIDENCE_KEY,         # 预测置信度键
+    INTENT_RANKING_KEY,               # 意图排名键
+    ENTITY_ATTRIBUTE_TEXT,            # 实体属性文本
+    ENTITY_ATTRIBUTE_START,           # 实体属性开始位置
+    ENTITY_ATTRIBUTE_CONFIDENCE,      # 实体属性置信度
+    ENTITY_ATTRIBUTE_END,             # 实体属性结束位置
+    FULL_RETRIEVAL_INTENT_NAME_KEY,   # 完整检索意图名称键
 )
 
 
+# =============================================================================
+# 类型定义和日志配置
+# =============================================================================
 if TYPE_CHECKING:
-    from typing_extensions import TypedDict
+    # 仅在类型检查时导入，避免循环导入
+    from typing_extensions import TypedDict  # 类型字典
 
-    from rasa.shared.core.trackers import DialogueStateTracker
+    from rasa.shared.core.trackers import DialogueStateTracker  # 对话状态跟踪器
 
+    # 实体预测类型定义
     EntityPrediction = TypedDict(
         "EntityPrediction",
         {
-            ENTITY_ATTRIBUTE_TEXT: Text,  # type: ignore[misc]
-            ENTITY_ATTRIBUTE_START: Optional[float],
-            ENTITY_ATTRIBUTE_END: Optional[float],
-            ENTITY_ATTRIBUTE_VALUE: Text,
-            ENTITY_ATTRIBUTE_CONFIDENCE: float,
-            ENTITY_ATTRIBUTE_TYPE: Text,
-            ENTITY_ATTRIBUTE_GROUP: Optional[Text],
-            ENTITY_ATTRIBUTE_ROLE: Optional[Text],
-            "additional_info": Any,
+            ENTITY_ATTRIBUTE_TEXT: Text,  # type: ignore[misc]  # 实体文本
+            ENTITY_ATTRIBUTE_START: Optional[float],           # 实体开始位置
+            ENTITY_ATTRIBUTE_END: Optional[float],             # 实体结束位置
+            ENTITY_ATTRIBUTE_VALUE: Text,                      # 实体值
+            ENTITY_ATTRIBUTE_CONFIDENCE: float,                # 实体置信度
+            ENTITY_ATTRIBUTE_TYPE: Text,                       # 实体类型
+            ENTITY_ATTRIBUTE_GROUP: Optional[Text],            # 实体组
+            ENTITY_ATTRIBUTE_ROLE: Optional[Text],             # 实体角色
+            "additional_info": Any,                            # 附加信息
         },
-        total=False,
+        total=False,  # 允许部分字段缺失
     )
 
+    # 意图预测类型定义
     IntentPrediction = TypedDict(
-        "IntentPrediction", {INTENT_NAME_KEY: Text, PREDICTED_CONFIDENCE_KEY: float}  # type: ignore[misc]  # noqa: E501
+        "IntentPrediction", 
+        {
+            INTENT_NAME_KEY: Text,                    # type: ignore[misc]  # 意图名称
+            PREDICTED_CONFIDENCE_KEY: float           # 预测置信度
+        }
     )
+    
+    # NLU 预测数据类型定义
     NLUPredictionData = TypedDict(
         "NLUPredictionData",
         {
-            TEXT: Text,  # type: ignore[misc]
-            INTENT: IntentPrediction,
-            INTENT_RANKING_KEY: List[IntentPrediction],
-            ENTITIES: List[EntityPrediction],
-            "message_id": Optional[Text],
-            "metadata": Dict,
+            TEXT: Text,  # type: ignore[misc]                    # 文本
+            INTENT: IntentPrediction,                            # 意图预测
+            INTENT_RANKING_KEY: List[IntentPrediction],         # 意图排名
+            ENTITIES: List[EntityPrediction],                    # 实体列表
+            "message_id": Optional[Text],                        # 消息ID
+            "metadata": Dict,                                   # 元数据
         },
-        total=False,
+        total=False,  # 允许部分字段缺失
     )
-logger = logging.getLogger(__name__)
-structlogger = structlog.get_logger()
 
+# 日志记录器配置
+logger = logging.getLogger(__name__)        # 标准日志记录器
+structlogger = structlog.get_logger()      # 结构化日志记录器
+
+
+# =============================================================================
+# 事件序列化和反序列化工具函数
+# =============================================================================
 
 def deserialise_events(serialized_events: List[Dict[Text, Any]]) -> List["Event"]:
-    """Convert a list of dictionaries to a list of corresponding events.
+    """将字典列表转换为对应的事件列表。
+    
+    此函数用于从序列化的事件数据中重建事件对象，
+    支持从数据库或文件中恢复对话历史。
 
-    Example format:
+    Args:
+        serialized_events: 序列化的事件字典列表
+        
+    Returns:
+        重建的事件对象列表
+        
+    Example:
         [{"event": "slot", "value": 5, "name": "my_slot"}]
     """
-    deserialised = []
+    deserialised = []  # 反序列化的事件列表
 
-    for e in serialized_events:
-        if "event" in e:
-            event = Event.from_parameters(e)
-            if event:
-                deserialised.append(event)
-            else:
+    for e in serialized_events:  # 遍历每个序列化事件
+        if "event" in e:  # 检查是否包含事件类型
+            event = Event.from_parameters(e)  # 从参数创建事件
+            if event:  # 如果事件创建成功
+                deserialised.append(event)  # 添加到结果列表
+            else:  # 如果事件创建失败
                 structlogger.warning(
-                    "event.deserialization.failed", rasa_event=copy.deepcopy(event)
+                    "event.deserialization.failed", 
+                    rasa_event=copy.deepcopy(event)  # 记录警告信息
                 )
 
-    return deserialised
+    return deserialised  # 返回反序列化的事件列表
 
 
 def deserialise_entities(entities: Union[Text, List[Any]]) -> List[Dict[Text, Any]]:
-    if isinstance(entities, str):
-        entities = json.loads(entities)
+    """反序列化实体数据。
+    
+    将实体数据从字符串或列表格式转换为字典列表格式，
+    用于处理从不同来源获取的实体信息。
+    
+    Args:
+        entities: 实体数据，可以是JSON字符串或实体列表
+        
+    Returns:
+        实体字典列表
+    """
+    if isinstance(entities, str):  # 如果是字符串格式
+        entities = json.loads(entities)  # 解析JSON字符串
 
-    return [e for e in entities if isinstance(e, dict)]
+    return [e for e in entities if isinstance(e, dict)]  # 返回字典类型的实体
 
 
 def format_message(
     text: Text, intent: Optional[Text], entities: Union[Text, List[Any]]
 ) -> Text:
-    """Uses NLU parser information to generate a message with inline entity annotations.
+    """使用NLU解析器信息生成带有内联实体注释的消息。
+    
+    此函数将用户消息、意图和实体信息组合成格式化的消息，
+    用于训练数据的生成和显示。
 
-    Arguments:
-        text: text of the message
-        intent: intent of the message
-        entities: entities of the message
+    Args:
+        text: 消息文本
+        intent: 消息意图
+        entities: 消息实体
 
-    Return:
-        Message with entities annotated inline, e.g.
-        `I am from [Berlin]{`"`entity`"`: `"`city`"`}`.
+    Returns:
+        带有内联实体注释的消息，例如：
+        `I am from [Berlin]{"entity": "city"}`
     """
+    # 导入训练数据相关模块
     from rasa.shared.nlu.training_data.formats.readerwriter import TrainingDataWriter
     from rasa.shared.nlu.training_data import entities_parser
 
+    # 解析训练示例
     message_from_md = entities_parser.parse_training_example(text, intent)
+    # 反序列化实体
     deserialised_entities = deserialise_entities(entities)
+    # 生成格式化消息
     return TrainingDataWriter.generate_message(
         {"text": message_from_md.get(TEXT), "entities": deserialised_entities}
     )
@@ -161,11 +220,14 @@ def split_events(
     additional_splitting_conditions: Optional[Dict[Text, Any]] = None,
     include_splitting_event: bool = True,
 ) -> List[List["Event"]]:
-    """Splits events according to an event type and condition.
+    """根据事件类型和条件分割事件列表。
+    
+    此函数用于将事件列表按照特定的事件类型和条件进行分割，
+    常用于将长对话分割成多个会话或场景。
 
     Examples:
-        Splitting events according to the event type `ActionExecuted` and the
-        `action_name` 'action_session_start' would look as follows:
+        按照 `ActionExecuted` 事件类型和 `action_name` 为 'action_session_start' 的条件
+        分割事件列表：
 
         >> _events = split_events(
                         events,
@@ -175,363 +237,478 @@ def split_events(
                      )
 
     Args:
-        events: Events to split.
-        event_type_to_split_on: The event type to split on.
-        additional_splitting_conditions: Additional event attributes to split on.
-        include_splitting_event: Whether the events of the type on which the split
-            is based should be included in the returned events.
+        events: 要分割的事件列表
+        event_type_to_split_on: 用于分割的事件类型
+        additional_splitting_conditions: 额外的分割条件（事件属性）
+        include_splitting_event: 是否在返回的事件中包含分割事件本身
 
     Returns:
-        The split events.
+        分割后的事件列表
     """
-    sub_events = []
-    current: List["Event"] = []
+    sub_events = []  # 分割后的事件组列表
+    current: List["Event"] = []  # 当前事件组
 
     def event_fulfills_splitting_condition(evt: "Event") -> bool:
-        # event does not have the correct type
+        """检查事件是否满足分割条件。
+        
+        Args:
+            evt: 要检查的事件
+            
+        Returns:
+            是否满足分割条件
+        """
+        # 检查事件类型是否正确
         if not isinstance(evt, event_type_to_split_on):
             return False
 
-        # the type is correct and there are no further conditions
+        # 如果类型正确且没有其他条件
         if not additional_splitting_conditions:
             return True
 
-        # there are further conditions - check those
+        # 如果有其他条件，检查这些条件
         return all(
             getattr(evt, k, None) == v
             for k, v in additional_splitting_conditions.items()
         )
 
-    for event in events:
-        if event_fulfills_splitting_condition(event):
-            if current:
-                sub_events.append(current)
+    for event in events:  # 遍历所有事件
+        if event_fulfills_splitting_condition(event):  # 如果事件满足分割条件
+            if current:  # 如果当前组不为空
+                sub_events.append(current)  # 将当前组添加到结果中
 
-            current = []
-            if include_splitting_event:
-                current.append(event)
-        else:
-            current.append(event)
+            current = []  # 重置当前组
+            if include_splitting_event:  # 如果包含分割事件
+                current.append(event)  # 将分割事件添加到新组
+        else:  # 如果事件不满足分割条件
+            current.append(event)  # 将事件添加到当前组
 
-    if current:
-        sub_events.append(current)
+    if current:  # 如果最后还有未处理的事件
+        sub_events.append(current)  # 添加到结果中
 
-    return sub_events
+    return sub_events  # 返回分割后的事件列表
 
 
 def do_events_begin_with_session_start(events: List["Event"]) -> bool:
-    """Determines whether `events` begins with a session start sequence.
-
-    A session start sequence is a sequence of two events: an executed
-    `action_session_start` as well as a logged `session_started`.
+    """判断事件列表是否以会话开始序列开始。
+    
+    会话开始序列由两个事件组成：一个执行的 `action_session_start` 动作
+    和一个记录的 `session_started` 事件。
 
     Args:
-        events: The events to inspect.
+        events: 要检查的事件列表
 
     Returns:
-        Whether `events` begins with a session start sequence.
+        事件列表是否以会话开始序列开始
     """
-    if len(events) < 2:
-        return False
+    if len(events) < 2:  # 如果事件数量少于2个
+        return False  # 不可能有会话开始序列
 
-    first = events[0]
-    second = events[1]
+    first = events[0]   # 第一个事件
+    second = events[1]  # 第二个事件
 
-    # We are not interested in specific metadata or timestamps. Action name and event
-    # type are sufficient for this check
+    # 我们不关心特定的元数据或时间戳。动作名称和事件类型
+    # 足以进行此检查
     return (
-        isinstance(first, ActionExecuted)
-        and first.action_name == ACTION_SESSION_START_NAME
-        and isinstance(second, SessionStarted)
+        isinstance(first, ActionExecuted)  # 第一个事件是动作执行
+        and first.action_name == ACTION_SESSION_START_NAME  # 动作名称是会话开始
+        and isinstance(second, SessionStarted)  # 第二个事件是会话开始
     )
 
 
 def remove_parse_data(event: Dict[Text, Any]) -> Dict[Text, Any]:
-    """Reduce event details to the minimum necessary to be structlogged.
-
-    Deletes the parse_data key from the event if it exists.
+    """将事件详情减少到结构化日志记录所需的最小值。
+    
+    此函数用于优化日志记录，删除事件中不必要的解析数据，
+    以减少日志文件的大小和提高性能。
 
     Args:
-        event: The event to be reduced.
+        event: 要减少的事件
 
     Returns:
-        A reduced copy of the event.
+        减少后的事件副本
     """
-    reduced_event = copy.deepcopy(event)
-    if "parse_data" in reduced_event:
-        del reduced_event["parse_data"]
-    return reduced_event
+    reduced_event = copy.deepcopy(event)  # 深拷贝事件
+    if "parse_data" in reduced_event:  # 如果存在解析数据
+        del reduced_event["parse_data"]  # 删除解析数据
+    return reduced_event  # 返回减少后的事件
 
 
-E = TypeVar("E", bound="Event")
+# =============================================================================
+# 事件基类和核心事件类型
+# =============================================================================
+
+E = TypeVar("E", bound="Event")  # 事件类型变量
 
 
 class Event(ABC):
-    """Describes events in conversation and how the affect the conversation state.
-
-    Immutable representation of everything which happened during a conversation of the
-    user with the assistant. Tells the `rasa.shared.core.trackers.DialogueStateTracker`
-    how to update its state as the events occur.
+    """描述对话中的事件以及它们如何影响对话状态。
+    
+    这是所有事件类型的抽象基类，提供了事件的基本结构和行为。
+    事件是对话中发生的一切的不可变表示，告诉 `DialogueStateTracker`
+    如何在事件发生时更新其状态。
     """
 
-    type_name = "event"
+    type_name = "event"  # 事件类型名称
 
     def __init__(
         self,
-        timestamp: Optional[float] = None,
-        metadata: Optional[Dict[Text, Any]] = None,
+        timestamp: Optional[float] = None,  # 时间戳
+        metadata: Optional[Dict[Text, Any]] = None,  # 元数据
     ) -> None:
-        self.timestamp = timestamp or time.time()
-        self.metadata = metadata or {}
+        """初始化事件。
+        
+        Args:
+            timestamp: 事件时间戳，默认为当前时间
+            metadata: 事件元数据，默认为空字典
+        """
+        self.timestamp = timestamp or time.time()  # 设置时间戳
+        self.metadata = metadata or {}  # 设置元数据
 
     def __ne__(self, other: Any) -> bool:
-        # Not strictly necessary, but to avoid having both x==y and x!=y
-        # True at the same time
+        """不等于操作符。
+        
+        虽然不是严格必要的，但为了避免 x==y 和 x!=y 同时为 True
+        """
         return not (self == other)
 
     @abc.abstractmethod
     def as_story_string(self) -> Optional[Text]:
-        """Returns the event as story string.
+        """返回事件的故事字符串表示。
+        
+        此方法用于将事件转换为故事格式的字符串，
+        用于训练数据的生成和显示。
 
         Returns:
-            textual representation of the event or None.
+            事件的文本表示或 None
         """
-        # Every class should implement this
+        # 每个子类都应该实现此方法
         raise NotImplementedError
 
     @staticmethod
     def from_story_string(
-        event_name: Text,
-        parameters: Dict[Text, Any],
-        default: Optional[Type["Event"]] = None,
+        event_name: Text,  # 事件名称
+        parameters: Dict[Text, Any],  # 事件参数
+        default: Optional[Type["Event"]] = None,  # 默认事件类型
     ) -> Optional[List["Event"]]:
-        event_class = Event.resolve_by_type(event_name, default)
+        """从故事字符串创建事件。
+        
+        Args:
+            event_name: 事件类型名称
+            parameters: 事件参数字典
+            default: 默认事件类型
+            
+        Returns:
+            创建的事件列表或 None
+        """
+        event_class = Event.resolve_by_type(event_name, default)  # 解析事件类型
 
-        if not event_class:
+        if not event_class:  # 如果无法解析事件类型
             return None
 
-        return event_class._from_story_string(parameters)
+        return event_class._from_story_string(parameters)  # 从故事字符串创建事件
 
     @staticmethod
     def from_parameters(
-        parameters: Dict[Text, Any], default: Optional[Type["Event"]] = None
+        parameters: Dict[Text, Any],  # 参数字典
+        default: Optional[Type["Event"]] = None  # 默认事件类型
     ) -> Optional["Event"]:
-
-        event_name = parameters.get("event")
-        if event_name is None:
+        """从参数字典创建事件。
+        
+        Args:
+            parameters: 包含事件信息的参数字典
+            default: 默认事件类型
+            
+        Returns:
+            创建的事件或 None
+        """
+        event_name = parameters.get("event")  # 获取事件名称
+        if event_name is None:  # 如果没有事件名称
             return None
 
-        event_class: Optional[Type[Event]] = Event.resolve_by_type(event_name, default)
-        if not event_class:
+        event_class: Optional[Type[Event]] = Event.resolve_by_type(event_name, default)  # 解析事件类型
+        if not event_class:  # 如果无法解析事件类型
             return None
 
-        return event_class._from_parameters(parameters)
+        return event_class._from_parameters(parameters)  # 从参数创建事件
 
     @classmethod
     def _from_story_string(
         cls: Type[E], parameters: Dict[Text, Any]
     ) -> Optional[List[E]]:
-        """Called to convert a parsed story line into an event."""
-        return [cls(parameters.get("timestamp"), parameters.get("metadata"))]
+        """将解析的故事行转换为事件。
+        
+        此方法由子类实现，用于从故事格式的字符串创建事件对象。
+        
+        Args:
+            cls: 事件类
+            parameters: 参数字典
+            
+        Returns:
+            事件列表
+        """
+        return [cls(parameters.get("timestamp"), parameters.get("metadata"))]  # 创建事件实例
 
     def as_dict(self) -> Dict[Text, Any]:
-        d = {"event": self.type_name, "timestamp": self.timestamp}
+        """将事件转换为字典格式。
+        
+        Returns:
+            事件的字典表示
+        """
+        d = {"event": self.type_name, "timestamp": self.timestamp}  # 基本字段
 
-        if self.metadata:
-            d["metadata"] = self.metadata
+        if self.metadata:  # 如果有元数据
+            d["metadata"] = self.metadata  # 添加元数据
 
-        return d
+        return d  # 返回字典
 
     def fingerprint(self) -> Text:
-        """Returns a unique hash for the event which is stable across python runs.
-
+        """返回事件的唯一哈希值，在Python运行之间保持稳定。
+        
+        此方法用于生成事件的唯一标识符，用于去重和比较。
+        
         Returns:
-            fingerprint of the event
+            事件的指纹
         """
-        data = self.as_dict()
-        del data["timestamp"]
-        return rasa.shared.utils.io.get_dictionary_fingerprint(data)
+        data = self.as_dict()  # 获取字典表示
+        del data["timestamp"]  # 删除时间戳（时间戳不应该影响指纹）
+        return rasa.shared.utils.io.get_dictionary_fingerprint(data)  # 生成指纹
 
     @classmethod
     def _from_parameters(cls, parameters: Dict[Text, Any]) -> Optional["Event"]:
-        """Called to convert a dictionary of parameters to a single event.
-
-        By default uses the same implementation as the story line
-        conversation ``_from_story_string``. But the subclass might
-        decide to handle parameters differently if the parsed parameters
-        don't origin from a story file.
+        """将参数字典转换为单个事件。
+        
+        默认情况下使用与故事行转换相同的实现。但子类可能
+        决定以不同的方式处理参数，特别是当解析的参数
+        不是来自故事文件时。
+        
+        Args:
+            cls: 事件类
+            parameters: 参数字典
+            
+        Returns:
+            创建的事件或 None
         """
-        result = cls._from_story_string(parameters)
-        if len(result) > 1:
+        result = cls._from_story_string(parameters)  # 从故事字符串创建事件
+        if len(result) > 1:  # 如果创建了多个事件
             logger.warning(
                 f"Event from parameters called with parameters "
                 f"for multiple events. This is not supported, "
                 f"only the first event will be returned. "
                 f"Parameters: {parameters}"
             )
-        return result[0] if result else None
+        return result[0] if result else None  # 返回第一个事件或 None
 
     @staticmethod
     def resolve_by_type(
         type_name: Text, default: Optional[Type["Event"]] = None
     ) -> Optional[Type["Event"]]:
-        """Returns a slots class by its type name."""
-        for cls in rasa.shared.utils.common.all_subclasses(Event):
-            if cls.type_name == type_name:
-                return cls
-        if type_name == "topic":
-            return None  # backwards compatibility to support old TopicSet evts
-        elif default is not None:
-            return default
-        else:
-            raise ValueError(f"Unknown event name '{type_name}'.")
+        """根据类型名称返回事件类。
+        
+        Args:
+            type_name: 事件类型名称
+            default: 默认事件类型
+            
+        Returns:
+            对应的事件类或 None
+        """
+        for cls in rasa.shared.utils.common.all_subclasses(Event):  # 遍历所有事件子类
+            if cls.type_name == type_name:  # 如果类型名称匹配
+                return cls  # 返回对应的事件类
+        if type_name == "topic":  # 如果是旧的主题事件
+            return None  # 向后兼容，支持旧的 TopicSet 事件
+        elif default is not None:  # 如果有默认类型
+            return default  # 返回默认类型
+        else:  # 如果无法找到对应类型
+            raise ValueError(f"Unknown event name '{type_name}'.")  # 抛出异常
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state.
+        """将事件应用到当前对话状态。
+        
+        此方法由子类实现，用于更新跟踪器的状态。
 
         Args:
-            tracker: The current conversation state.
+            tracker: 当前对话状态跟踪器
         """
-        pass
+        pass  # 默认实现为空
 
     @abc.abstractmethod
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
-        # Every class should implement this
+        """比较对象与另一个对象。
+        
+        每个子类都应该实现此方法以支持事件比较。
+        """
+        # 每个子类都应该实现此方法
         raise NotImplementedError()
 
     def __str__(self) -> Text:
-        """Returns text representation of event."""
-        return f"{self.__class__.__name__}()"
+        """返回事件的文本表示。
+        
+        Returns:
+            事件的字符串表示
+        """
+        return f"{self.__class__.__name__}()"  # 返回类名
 
+
+# =============================================================================
+# 事件混入类 - 提供通用行为
+# =============================================================================
 
 class AlwaysEqualEventMixin(Event, ABC):
-    """Class to deduplicate common behavior for events without additional attributes."""
+    """用于没有额外属性的事件的通用行为去重类。
+    
+    此类提供始终相等的比较行为，适用于不需要复杂比较逻辑的事件。
+    """
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
-        if not isinstance(other, self.__class__):
-            return NotImplemented
+        """比较对象与另一个对象。
+        
+        对于此类事件，只要类型相同就认为相等。
+        """
+        if not isinstance(other, self.__class__):  # 如果类型不同
+            return NotImplemented  # 返回 NotImplemented
 
-        return True
+        return True  # 类型相同则相等
 
 
 class SkipEventInMDStoryMixin(Event, ABC):
-    """Skips the visualization of an event in Markdown stories."""
-
-    def as_story_string(self) -> None:
-        """Returns the event as story string.
-
-        Returns:
-            None, as this event should not appear inside the story.
-        """
-        return
-
-
-class UserUttered(Event):
-    """The user has said something to the bot.
-
-    As a side effect a new `Turn` will be created in the `Tracker`.
+    """跳过在 Markdown 故事中可视化的事件。
+    
+    此类用于那些不应该在故事文件中显示的事件，
+    如内部状态变化事件。
     """
 
-    type_name = "user"
+    def as_story_string(self) -> None:
+        """返回事件的故事字符串表示。
+        
+        此类事件不应该出现在故事中，因此返回 None。
+        
+        Returns:
+            None，因为此事件不应出现在故事内部
+        """
+        return  # 返回 None
+
+
+# =============================================================================
+# 用户消息事件类
+# =============================================================================
+
+class UserUttered(Event):
+    """用户对机器人说了什么。
+    
+    作为副作用，将在 `Tracker` 中创建一个新的 `Turn`。
+    这是对话中最重要的事件类型之一，记录了用户的输入。
+    """
+
+    type_name = "user"  # 事件类型名称
 
     def __init__(
         self,
-        text: Optional[Text] = None,
-        intent: Optional[Dict] = None,
-        entities: Optional[List[Dict]] = None,
-        parse_data: Optional["NLUPredictionData"] = None,
-        timestamp: Optional[float] = None,
-        input_channel: Optional[Text] = None,
-        message_id: Optional[Text] = None,
-        metadata: Optional[Dict] = None,
-        use_text_for_featurization: Optional[bool] = None,
+        text: Optional[Text] = None,  # 用户消息文本
+        intent: Optional[Dict] = None,  # 意图预测
+        entities: Optional[List[Dict]] = None,  # 提取的实体
+        parse_data: Optional["NLUPredictionData"] = None,  # 详细的NLU解析结果
+        timestamp: Optional[float] = None,  # 时间戳
+        input_channel: Optional[Text] = None,  # 输入通道
+        message_id: Optional[Text] = None,  # 消息ID
+        metadata: Optional[Dict] = None,  # 元数据
+        use_text_for_featurization: Optional[bool] = None,  # 是否使用文本进行特征化
     ) -> None:
-        """Creates event for incoming user message.
+        """创建传入用户消息的事件。
 
         Args:
-            text: Text of user message.
-            intent: Intent prediction of user message.
-            entities: Extracted entities.
-            parse_data: Detailed NLU parsing result for message.
-            timestamp: When the event was created.
-            metadata: Additional event metadata.
-            input_channel: Which channel the user used to send message.
-            message_id: Unique ID for message.
-            use_text_for_featurization: `True` if the message's text was used to predict
-                next action. `False` if the message's intent was used.
-
+            text: 用户消息文本
+            intent: 用户消息的意图预测
+            entities: 提取的实体
+            parse_data: 消息的详细NLU解析结果
+            timestamp: 事件创建时间
+            metadata: 附加事件元数据
+            input_channel: 用户发送消息的通道
+            message_id: 消息的唯一ID
+            use_text_for_featurization: 如果使用消息文本预测下一个动作则为 `True`，
+                如果使用消息意图则为 `False`
         """
-        self.text = text
-        self.intent = intent if intent else {}
-        self.entities = entities if entities else []
-        self.input_channel = input_channel
-        self.message_id = message_id
+        self.text = text  # 设置文本
+        self.intent = intent if intent else {}  # 设置意图，默认为空字典
+        self.entities = entities if entities else []  # 设置实体，默认为空列表
+        self.input_channel = input_channel  # 设置输入通道
+        self.message_id = message_id  # 设置消息ID
 
-        super().__init__(timestamp, metadata)
+        super().__init__(timestamp, metadata)  # 调用父类构造函数
 
-        # The featurization is set by the policies during prediction time using a
-        # `DefinePrevUserUtteredFeaturization` event.
+        # 特征化设置由策略在预测时使用 `DefinePrevUserUtteredFeaturization` 事件设置
         self.use_text_for_featurization = use_text_for_featurization
-        # define how this user utterance should be featurized
-        if self.text and not self.intent_name:
-            # happens during training
+        # 定义此用户话语应如何进行特征化
+        if self.text and not self.intent_name:  # 如果有文本但没有意图名称
+            # 在训练期间发生
             self.use_text_for_featurization = True
-        elif self.intent_name and not self.text:
-            # happens during training
+        elif self.intent_name and not self.text:  # 如果有意图名称但没有文本
+            # 在训练期间发生
             self.use_text_for_featurization = False
 
+        # 构建解析数据字典
         self.parse_data: "NLUPredictionData" = {
-            INTENT: self.intent,  # type: ignore[misc]
-            # Copy entities so that changes to `self.entities` don't affect
-            # `self.parse_data` and hence don't get persisted
-            ENTITIES: self.entities.copy(),
-            TEXT: self.text,
-            "message_id": self.message_id,
-            "metadata": self.metadata,
+            INTENT: self.intent,  # type: ignore[misc]  # 意图信息
+            # 复制实体，以便对 `self.entities` 的更改不会影响
+            # `self.parse_data`，因此不会持久化
+            ENTITIES: self.entities.copy(),  # 实体列表的副本
+            TEXT: self.text,  # 文本
+            "message_id": self.message_id,  # 消息ID
+            "metadata": self.metadata,  # 元数据
         }
-        if parse_data:
-            self.parse_data.update(**parse_data)
+        if parse_data:  # 如果提供了解析数据
+            self.parse_data.update(**parse_data)  # 更新解析数据
 
     @staticmethod
     def _from_parse_data(
-        text: Text,
-        parse_data: "NLUPredictionData",
-        timestamp: Optional[float] = None,
-        input_channel: Optional[Text] = None,
-        message_id: Optional[Text] = None,
-        metadata: Optional[Dict] = None,
+        text: Text,  # 文本
+        parse_data: "NLUPredictionData",  # 解析数据
+        timestamp: Optional[float] = None,  # 时间戳
+        input_channel: Optional[Text] = None,  # 输入通道
+        message_id: Optional[Text] = None,  # 消息ID
+        metadata: Optional[Dict] = None,  # 元数据
     ) -> "UserUttered":
+        """从解析数据创建用户话语事件。
+        
+        Args:
+            text: 用户消息文本
+            parse_data: NLU解析数据
+            timestamp: 时间戳
+            input_channel: 输入通道
+            message_id: 消息ID
+            metadata: 元数据
+            
+        Returns:
+            用户话语事件
+        """
         return UserUttered(
-            text,
-            parse_data.get(INTENT),
-            parse_data.get(ENTITIES, []),
-            parse_data,
-            timestamp,
-            input_channel,
-            message_id,
-            metadata,
+            text,  # 文本
+            parse_data.get(INTENT),  # 从解析数据获取意图
+            parse_data.get(ENTITIES, []),  # 从解析数据获取实体
+            parse_data,  # 解析数据
+            timestamp,  # 时间戳
+            input_channel,  # 输入通道
+            message_id,  # 消息ID
+            metadata,  # 元数据
         )
 
     def __hash__(self) -> int:
-        """Returns unique hash of object."""
+        """返回对象的唯一哈希值。"""
         return hash(json.dumps(self.as_sub_state()))
 
     @property
     def intent_name(self) -> Optional[Text]:
-        """Returns intent name or `None` if no intent."""
+        """返回意图名称，如果没有意图则返回 `None`。"""
         return self.intent.get(INTENT_NAME_KEY)
 
     @property
     def full_retrieval_intent_name(self) -> Optional[Text]:
-        """Returns full retrieval intent name or `None` if no retrieval intent."""
+        """返回完整检索意图名称，如果没有检索意图则返回 `None`。"""
         return self.intent.get(FULL_RETRIEVAL_INTENT_NAME_KEY)
 
     # Note that this means two UserUttered events with the same text, intent
     # and entities but _different_ timestamps will be considered equal.
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, UserUttered):
             return NotImplemented
 
@@ -548,7 +725,7 @@ class UserUttered(Event):
         )
 
     def __str__(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的文本表示。"""
         entities = ""
         if self.entities:
             entities_list = [
@@ -727,11 +904,11 @@ class DefinePrevUserUtteredFeaturization(SkipEventInMDStoryMixin):
         self.use_text_for_featurization = use_text_for_featurization
 
     def __str__(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的文本表示。"""
         return f"DefinePrevUserUtteredFeaturization({self.use_text_for_featurization})"
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(self.use_text_for_featurization)
 
     @classmethod
@@ -745,7 +922,7 @@ class DefinePrevUserUtteredFeaturization(SkipEventInMDStoryMixin):
         )
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Returns serialized event."""
+        """返回序列化的事件。"""
         d = super().as_dict()
         d.update({USE_TEXT_FOR_FEATURIZATION: self.use_text_for_featurization})
         return d
@@ -770,7 +947,7 @@ class DefinePrevUserUtteredFeaturization(SkipEventInMDStoryMixin):
         )
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, DefinePrevUserUtteredFeaturization):
             return NotImplemented
 
@@ -853,7 +1030,7 @@ class EntitiesAdded(SkipEventInMDStoryMixin):
 
 
 class BotUttered(SkipEventInMDStoryMixin):
-    """The bot has said something to the user.
+    """机器人对用户说了什么。
 
     This class is not used in the story training as it is contained in the
 
@@ -891,30 +1068,30 @@ class BotUttered(SkipEventInMDStoryMixin):
         )
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(self.__members())
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, BotUttered):
             return NotImplemented
 
         return self.__members() == other.__members()
 
     def __str__(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的文本表示。"""
         return "BotUttered(text: {}, data: {}, metadata: {})".format(
             self.text, json.dumps(self.data), json.dumps(self.metadata)
         )
 
     def __repr__(self) -> Text:
-        """Returns text representation of event for debugging."""
+        """返回事件的调试文本表示。"""
         return "BotUttered('{}', {}, {}, {})".format(
             self.text, json.dumps(self.data), json.dumps(self.metadata), self.timestamp
         )
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         tracker.latest_bot_utterance = self
 
     def message(self) -> Dict[Text, Any]:
@@ -939,7 +1116,7 @@ class BotUttered(SkipEventInMDStoryMixin):
         return BotUttered()
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Returns serialized event."""
+        """返回序列化的事件。"""
         d = super().as_dict()
         d.update({"text": self.text, "data": self.data, "metadata": self.metadata})
         return d
@@ -958,7 +1135,7 @@ class BotUttered(SkipEventInMDStoryMixin):
 
 
 class SlotSet(Event):
-    """The user has specified their preference for the value of a `slot`.
+    """用户已指定其对槽位值的偏好。
 
     Every slot has a name and a value. This event can be used to set a
     value for a slot on a conversation.
@@ -993,18 +1170,18 @@ class SlotSet(Event):
         return f"SlotSet(key: {self.key}, value: {self.value})"
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash((self.key, jsonpickle.encode(self.value)))
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, SlotSet):
             return NotImplemented
 
         return (self.key, self.value) == (other.key, other.value)
 
     def as_story_string(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的故事字符串表示。"""
         props = json.dumps({self.key: self.value}, ensure_ascii=False)
         return f"{self.type_name}{props}"
 
@@ -1023,7 +1200,7 @@ class SlotSet(Event):
             return None
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Returns serialized event."""
+        """返回序列化的事件。"""
         d = super().as_dict()
         d.update({"name": self.key, "value": self.value})
         return d
@@ -1041,12 +1218,12 @@ class SlotSet(Event):
             raise ValueError(f"Failed to parse set slot event. {e}")
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         tracker._set_slot(self.key, self.value)
 
 
 class Restarted(AlwaysEqualEventMixin):
-    """Conversation should start over & history wiped.
+    """对话应该重新开始并清除历史记录。
 
     Instead of deleting all events, this event can be used to reset the
     trackers state (e.g. ignoring any past user messages & resetting all
@@ -1056,11 +1233,11 @@ class Restarted(AlwaysEqualEventMixin):
     type_name = "restart"
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(32143124312)
 
     def as_story_string(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的故事字符串表示。"""
         return self.type_name
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
@@ -1070,7 +1247,7 @@ class Restarted(AlwaysEqualEventMixin):
 
 
 class UserUtteranceReverted(AlwaysEqualEventMixin):
-    """Bot reverts everything until before the most recent user message.
+    """机器人撤销最近用户消息之前的所有内容。
 
     The bot will revert all events after the latest `UserUttered`, this
     also means that the last event on the tracker is usually `action_listen`
@@ -1080,21 +1257,21 @@ class UserUtteranceReverted(AlwaysEqualEventMixin):
     type_name = "rewind"
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(32143124315)
 
     def as_story_string(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的故事字符串表示。"""
         return self.type_name
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         tracker._reset()
         tracker.replay_events()
 
 
 class AllSlotsReset(AlwaysEqualEventMixin):
-    """All Slots are reset to their initial values.
+    """所有槽位都重置为其初始值。
 
     If you want to keep the dialogue history and only want to reset the
     slots, you can use this event to set all the slots to their initial
@@ -1104,20 +1281,20 @@ class AllSlotsReset(AlwaysEqualEventMixin):
     type_name = "reset_slots"
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(32143124316)
 
     def as_story_string(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的故事字符串表示。"""
         return self.type_name
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         tracker._reset_slots()
 
 
 class ReminderScheduled(Event):
-    """Schedules the asynchronous triggering of a user intent at a given time.
+    """在给定时间安排用户意图的异步触发。
 
     The triggered intent can include entities if needed.
     """
@@ -1157,7 +1334,7 @@ class ReminderScheduled(Event):
         super().__init__(timestamp, metadata)
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(
             (
                 self.intent,
@@ -1169,14 +1346,14 @@ class ReminderScheduled(Event):
         )
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, ReminderScheduled):
             return NotImplemented
 
         return self.name == other.name
 
     def __str__(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的文本表示。"""
         return (
             f"ReminderScheduled(intent: {self.intent}, "
             f"trigger_date: {self.trigger_date_time}, "
@@ -1200,12 +1377,12 @@ class ReminderScheduled(Event):
         }
 
     def as_story_string(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的故事字符串表示。"""
         props = json.dumps(self._properties())
         return f"{self.type_name}{props}"
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Returns serialized event."""
+        """返回序列化的事件。"""
         d = super().as_dict()
         d.update(self._properties())
         return d
@@ -1231,7 +1408,7 @@ class ReminderScheduled(Event):
 
 
 class ReminderCancelled(Event):
-    """Cancel certain jobs."""
+    """取消某些任务。"""
 
     type_name = "cancel_reminder"
 
@@ -1264,18 +1441,18 @@ class ReminderCancelled(Event):
         super().__init__(timestamp, metadata)
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash((self.name, self.intent, str(self.entities)))
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, ReminderCancelled):
             return NotImplemented
 
         return hash(self) == hash(other)
 
     def __str__(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的文本表示。"""
         return (
             f"ReminderCancelled(name: {self.name}, intent: {self.intent}, "
             f"entities: {self.entities})"
@@ -1320,7 +1497,7 @@ class ReminderCancelled(Event):
         return str(hash(str(self.entities))) == entities_hash
 
     def as_story_string(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的故事字符串表示。"""
         props = json.dumps(
             {"name": self.name, "intent": self.intent, "entities": self.entities}
         )
@@ -1342,7 +1519,7 @@ class ReminderCancelled(Event):
 
 
 class ActionReverted(AlwaysEqualEventMixin):
-    """Bot undoes its last action.
+    """机器人撤销其最后一个动作。
 
     The bot reverts everything until before the most recent action.
     This includes the action itself, as well as any events that
@@ -1354,21 +1531,21 @@ class ActionReverted(AlwaysEqualEventMixin):
     type_name = "undo"
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(32143124318)
 
     def as_story_string(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的故事字符串表示。"""
         return self.type_name
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         tracker._reset()
         tracker.replay_events()
 
 
 class StoryExported(Event):
-    """Story should get dumped to a file."""
+    """故事应该转储到文件。"""
 
     type_name = "export"
 
@@ -1389,7 +1566,7 @@ class StoryExported(Event):
         super().__init__(timestamp, metadata)
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(32143124319)
 
     @classmethod
@@ -1405,16 +1582,16 @@ class StoryExported(Event):
         ]
 
     def as_story_string(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的故事字符串表示。"""
         return self.type_name
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         if self.path:
             tracker.export_stories_to_file(self.path)
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, StoryExported):
             return NotImplemented
 
@@ -1422,7 +1599,7 @@ class StoryExported(Event):
 
 
 class FollowupAction(Event):
-    """Enqueue a followup action."""
+    """将后续动作加入队列。"""
 
     type_name = "followup"
 
@@ -1443,22 +1620,22 @@ class FollowupAction(Event):
         super().__init__(timestamp, metadata)
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(self.action_name)
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, FollowupAction):
             return NotImplemented
 
         return self.action_name == other.action_name
 
     def __str__(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的文本表示。"""
         return f"FollowupAction(action: {self.action_name})"
 
     def as_story_string(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的故事字符串表示。"""
         props = json.dumps({"name": self.action_name})
         return f"{self.type_name}{props}"
 
@@ -1476,18 +1653,18 @@ class FollowupAction(Event):
         ]
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Returns serialized event."""
+        """返回序列化的事件。"""
         d = super().as_dict()
         d.update({"name": self.action_name})
         return d
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         tracker.trigger_followup_action(self.action_name)
 
 
 class ConversationPaused(AlwaysEqualEventMixin):
-    """Ignore messages from the user to let a human take over.
+    """忽略来自用户的消息，让人类接管。
 
     As a side effect the `Tracker`'s `paused` attribute will
     be set to `True`.
@@ -1496,20 +1673,20 @@ class ConversationPaused(AlwaysEqualEventMixin):
     type_name = "pause"
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(32143124313)
 
     def as_story_string(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的故事字符串表示。"""
         return str(self)
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         tracker._paused = True
 
 
 class ConversationResumed(AlwaysEqualEventMixin):
-    """Bot takes over conversation.
+    """机器人接管对话。
 
     Inverse of `PauseConversation`. As a side effect the `Tracker`'s
     `paused` attribute will be set to `False`.
@@ -1518,20 +1695,20 @@ class ConversationResumed(AlwaysEqualEventMixin):
     type_name = "resume"
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(32143124314)
 
     def as_story_string(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的故事字符串表示。"""
         return self.type_name
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         tracker._paused = False
 
 
 class ActionExecuted(Event):
-    """An operation describes an action taken + its result.
+    """操作描述已执行的动作及其结果。
 
     It comprises an action and a list of events. operations will be appended
     to the latest `Turn`` in `Tracker.turns`.
@@ -1594,11 +1771,11 @@ class ActionExecuted(Event):
         return str(self.action_name) or str(self.action_text)
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(self.__members__())
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, ActionExecuted):
             return NotImplemented
 
@@ -1632,7 +1809,7 @@ class ActionExecuted(Event):
         ]
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Returns serialized event."""
+        """返回序列化的事件。"""
         d = super().as_dict()
         d.update(
             {
@@ -1662,13 +1839,13 @@ class ActionExecuted(Event):
             return {ACTION_TEXT: cast(Text, self.action_text)}
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         tracker.set_latest_action(self.as_sub_state())
         tracker.clear_followup_action()
 
 
 class AgentUttered(SkipEventInMDStoryMixin):
-    """The agent has said something to the user.
+    """代理对用户说了什么。
 
     This class is not used in the story training as it is contained in the
     ``ActionExecuted`` class. An entry is made in the ``Tracker``.
@@ -1689,11 +1866,11 @@ class AgentUttered(SkipEventInMDStoryMixin):
         super().__init__(timestamp, metadata)
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash((self.text, jsonpickle.encode(self.data)))
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, AgentUttered):
             return NotImplemented
 
@@ -1703,13 +1880,13 @@ class AgentUttered(SkipEventInMDStoryMixin):
         )
 
     def __str__(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的文本表示。"""
         return "AgentUttered(text: {}, data: {})".format(
             self.text, json.dumps(self.data)
         )
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Returns serialized event."""
+        """返回序列化的事件。"""
         d = super().as_dict()
         d.update({"text": self.text, "data": self.data})
         return d
@@ -1728,7 +1905,7 @@ class AgentUttered(SkipEventInMDStoryMixin):
 
 
 class ActiveLoop(Event):
-    """If `name` is given: activates a loop with `name` else deactivates active loop."""
+    """如果给出 `name`：激活名为 `name` 的循环，否则停用活动循环。"""
 
     type_name = "active_loop"
 
@@ -1749,22 +1926,22 @@ class ActiveLoop(Event):
         super().__init__(timestamp, metadata)
 
     def __str__(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的文本表示。"""
         return f"Loop({self.name})"
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(self.name)
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, ActiveLoop):
             return NotImplemented
 
         return self.name == other.name
 
     def as_story_string(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的故事字符串表示。"""
         props = json.dumps({LOOP_NAME: self.name})
         return f"{ActiveLoop.type_name}{props}"
 
@@ -1780,13 +1957,13 @@ class ActiveLoop(Event):
         ]
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Returns serialized event."""
+        """返回序列化的事件。"""
         d = super().as_dict()
         d.update({LOOP_NAME: self.name})
         return d
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         tracker.change_loop_to(self.name)
 
 
@@ -1800,7 +1977,7 @@ class LegacyForm(ActiveLoop):
     type_name = "form"
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Returns serialized event."""
+        """返回序列化的事件。"""
         d = super().as_dict()
         # Dump old `Form` events as `ActiveLoop` events instead of keeping the old
         # event type.
@@ -1818,7 +1995,7 @@ class LegacyForm(ActiveLoop):
 
 
 class LoopInterrupted(SkipEventInMDStoryMixin):
-    """Event added by FormPolicy and RulePolicy.
+    """由 FormPolicy 和 RulePolicy 添加的事件。
 
     Notifies form action whether or not to validate the user input.
     """
@@ -1846,15 +2023,15 @@ class LoopInterrupted(SkipEventInMDStoryMixin):
         self.is_interrupted = is_interrupted
 
     def __str__(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的文本表示。"""
         return f"{LoopInterrupted.__name__}({self.is_interrupted})"
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(self.is_interrupted)
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, LoopInterrupted):
             return NotImplemented
 
@@ -1869,13 +2046,13 @@ class LoopInterrupted(SkipEventInMDStoryMixin):
         )
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Returns serialized event."""
+        """返回序列化的事件。"""
         d = super().as_dict()
         d.update({LOOP_INTERRUPTED: self.is_interrupted})
         return d
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         tracker.interrupt_loop(self.is_interrupted)
 
 
@@ -1909,7 +2086,7 @@ class LegacyFormValidation(LoopInterrupted):
         )
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Returns serialized event."""
+        """返回序列化的事件。"""
         d = super().as_dict()
         # Dump old `Form` events as `ActiveLoop` events instead of keeping the old
         # event type.
@@ -1927,7 +2104,7 @@ class LegacyFormValidation(LoopInterrupted):
 
 
 class ActionExecutionRejected(SkipEventInMDStoryMixin):
-    """Notify Core that the execution of the action has been rejected."""
+    """通知 Core 动作执行已被拒绝。"""
 
     type_name = "action_execution_rejected"
 
@@ -1954,7 +2131,7 @@ class ActionExecutionRejected(SkipEventInMDStoryMixin):
         super().__init__(timestamp, metadata)
 
     def __str__(self) -> Text:
-        """Returns text representation of event."""
+        """返回事件的文本表示。"""
         return (
             "ActionExecutionRejected("
             "action: {}, policy: {}, confidence: {})"
@@ -1962,11 +2139,11 @@ class ActionExecutionRejected(SkipEventInMDStoryMixin):
         )
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(self.action_name)
 
     def __eq__(self, other: Any) -> bool:
-        """Compares object with other object."""
+        """比较对象与另一个对象。"""
         if not isinstance(other, ActionExecutionRejected):
             return NotImplemented
 
@@ -1983,7 +2160,7 @@ class ActionExecutionRejected(SkipEventInMDStoryMixin):
         )
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Returns serialized event."""
+        """返回序列化的事件。"""
         d = super().as_dict()
         d.update(
             {
@@ -1995,17 +2172,17 @@ class ActionExecutionRejected(SkipEventInMDStoryMixin):
         return d
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         tracker.reject_action(self.action_name)
 
 
 class SessionStarted(AlwaysEqualEventMixin):
-    """Mark the beginning of a new conversation session."""
+    """标记新对话会话的开始。"""
 
     type_name = "session_started"
 
     def __hash__(self) -> int:
-        """Returns unique hash for event."""
+        """返回事件的唯一哈希值。"""
         return hash(32143124320)
 
     def as_story_string(self) -> None:
@@ -2015,6 +2192,6 @@ class SessionStarted(AlwaysEqualEventMixin):
         )
 
     def apply_to(self, tracker: "DialogueStateTracker") -> None:
-        """Applies event to current conversation state."""
+        """将事件应用到当前对话状态。"""
         # noinspection PyProtectedMember
         tracker._reset()

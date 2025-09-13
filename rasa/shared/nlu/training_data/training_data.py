@@ -26,18 +26,25 @@ from rasa.shared.nlu.constants import (
 from rasa.shared.nlu.training_data.message import Message
 from rasa.shared.nlu.training_data import util
 
+# =============================================================================
+# 训练数据模块 - 提供训练数据的加载、处理、验证和管理功能
+# =============================================================================
 
-DEFAULT_TRAINING_DATA_OUTPUT_PATH = "training_data.yml"
+DEFAULT_TRAINING_DATA_OUTPUT_PATH = "training_data.yml"  # 默认训练数据输出路径
 
 logger = logging.getLogger(__name__)
 
 
 class TrainingData:
-    """Holds loaded intent and entity training data."""
+    """训练数据容器类，用于保存加载的意图和实体训练数据。
+    
+    此类是 Rasa NLU 训练数据的核心容器，提供了训练数据的加载、处理、
+    验证、合并和持久化等功能。
+    """
 
-    # Validation will ensure and warn if these lower limits are not met
-    MIN_EXAMPLES_PER_INTENT = 2
-    MIN_EXAMPLES_PER_ENTITY = 2
+    # 验证将确保并警告如果未达到这些下限
+    MIN_EXAMPLES_PER_INTENT = 2  # 每个意图的最小示例数量
+    MIN_EXAMPLES_PER_ENTITY = 2  # 每个实体的最小示例数量
 
     def __init__(
         self,
@@ -47,7 +54,15 @@ class TrainingData:
         lookup_tables: Optional[List[Dict[Text, Any]]] = None,
         responses: Optional[Dict[Text, List[Dict[Text, Any]]]] = None,
     ) -> None:
+        """初始化训练数据对象。
 
+        Args:
+            training_examples: 训练示例消息列表
+            entity_synonyms: 实体同义词映射字典
+            regex_features: 正则表达式特征列表
+            lookup_tables: 查找表列表
+            responses: 响应模板字典
+        """
         if training_examples:
             self.training_examples = self.sanitize_examples(training_examples)
         else:
@@ -62,19 +77,18 @@ class TrainingData:
 
     @staticmethod
     def _load_lookup_table(lookup_table: Dict[Text, Any]) -> Dict[Text, Any]:
-        """Loads the actual lookup table from file if there is a file specified.
+        """从文件加载实际的查找表（如果指定了文件）。
 
-        Checks if the specified lookup table contains a filename in
-        `elements` and replaces it with actual elements from the file.
-        Returns the unchanged lookup table otherwise.
-        It works with JSON training data.
+        检查指定的查找表是否在 `elements` 中包含文件名，
+        如果是，则用文件的实际内容替换它。
+        否则返回未更改的查找表。
+        适用于 JSON 训练数据。
 
-        Params:
-            lookup_table: A lookup table.
+        Args:
+            lookup_table: 查找表字典
 
         Returns:
-            Updated lookup table where filenames are replaced with the contents of
-            these files.
+            更新的查找表，其中文件名被文件内容替换
         """
         elements = lookup_table["elements"]
         potential_file = elements if isinstance(elements, str) else elements[0]
@@ -91,10 +105,10 @@ class TrainingData:
         return lookup_table
 
     def fingerprint(self) -> Text:
-        """Fingerprint the training data.
+        """计算训练数据的指纹。
 
         Returns:
-            hex string as a fingerprint of the training data.
+            训练数据指纹的十六进制字符串
         """
         relevant_attributes = {
             "training_examples": list(
@@ -110,10 +124,10 @@ class TrainingData:
         return rasa.shared.utils.io.deep_container_fingerprint(relevant_attributes)
 
     def label_fingerprint(self) -> Text:
-        """Fingerprints the labels in the training data.
+        """计算训练数据中标签的指纹。
 
         Returns:
-            hex string as a fingerprint of the training data labels.
+            训练数据标签指纹的十六进制字符串
         """
         labels = {
             "intents": sorted(self.intents),
@@ -125,14 +139,13 @@ class TrainingData:
         return rasa.shared.utils.io.deep_container_fingerprint(labels)
 
     def merge(self, *others: Optional["TrainingData"]) -> "TrainingData":
-        """Return merged instance of this data with other training data.
+        """返回此数据与其他训练数据合并的实例。
 
         Args:
-            others: other training data instances to merge this one with
+            others: 要与此数据合并的其他训练数据实例
 
         Returns:
-            Merged training data object. Merging is not done in place, this
-            will be a new instance.
+            合并的训练数据对象。合并不是就地进行的，这将是一个新实例。
         """
         training_examples = copy.deepcopy(self.training_examples)
         entity_synonyms = self.entity_synonyms.copy()
@@ -150,7 +163,7 @@ class TrainingData:
 
             for text, syn in o.entity_synonyms.items():
                 util.check_duplicate_synonym(
-                    entity_synonyms, text, syn, "merging training data"
+                    entity_synonyms, text, syn, "合并训练数据"
                 )
 
             entity_synonyms.update(o.entity_synonyms)
@@ -163,13 +176,13 @@ class TrainingData:
     def filter_training_examples(
         self, condition: Callable[[Message], bool]
     ) -> "TrainingData":
-        """Filter training examples.
+        """过滤训练示例。
 
         Args:
-            condition: A function that will be applied to filter training examples.
+            condition: 用于过滤训练示例的函数
 
         Returns:
-            TrainingData: A TrainingData with filtered training examples.
+            TrainingData: 包含过滤后训练示例的 TrainingData 对象
         """
 
         return TrainingData(
@@ -181,10 +194,10 @@ class TrainingData:
         )
 
     def __hash__(self) -> int:
-        """Calculate hash for the training data object.
+        """计算训练数据对象的哈希值。
 
         Returns:
-            Hash of the training data object.
+            训练数据对象的哈希值
         """
         return int(self.fingerprint(), 16)
 

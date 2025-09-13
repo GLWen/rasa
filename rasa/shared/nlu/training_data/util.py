@@ -20,14 +20,21 @@ from rasa.shared.constants import UTTER_PREFIX
 import rasa.shared.utils.io
 import rasa.shared.data
 
+# =============================================================================
+# 训练数据工具模块 - 提供训练数据处理的各种工具函数
+# =============================================================================
+
 logger = logging.getLogger(__name__)
 
-ESCAPE_DCT = {"\b": "\\b", "\f": "\\f", "\n": "\\n", "\r": "\\r", "\t": "\\t"}
-ESCAPE_CHARS = set(ESCAPE_DCT.keys())
-ESCAPE = re.compile(f'[{"".join(ESCAPE_DCT.values())}]')
-UNESCAPE_DCT = {espaced_char: char for char, espaced_char in ESCAPE_DCT.items()}
-UNESCAPE = re.compile(f'[{"".join(UNESCAPE_DCT.values())}]')
-GROUP_COMPLETE_MATCH = 0
+# =============================================================================
+# 字符串转义相关常量 - 用于处理特殊字符的转义和反转义
+# =============================================================================
+ESCAPE_DCT = {"\b": "\\b", "\f": "\\f", "\n": "\\n", "\r": "\\r", "\t": "\\t"}  # 转义字典
+ESCAPE_CHARS = set(ESCAPE_DCT.keys())  # 需要转义的字符集合
+ESCAPE = re.compile(f'[{"".join(ESCAPE_DCT.values())}]')  # 转义正则表达式
+UNESCAPE_DCT = {espaced_char: char for char, espaced_char in ESCAPE_DCT.items()}  # 反转义字典
+UNESCAPE = re.compile(f'[{"".join(UNESCAPE_DCT.values())}]')  # 反转义正则表达式
+GROUP_COMPLETE_MATCH = 0  # 完整匹配组索引
 
 
 def transform_entity_synonyms(

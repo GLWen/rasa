@@ -14,11 +14,19 @@ from rasa.shared.core.training_data.story_reader.yaml_story_reader import (
     YAMLStoryReader,
 )
 
+# =============================================================================
+# Rasa 文件导入器模块 - 提供从 Rasa 项目文件导入训练数据的功能
+# =============================================================================
+
 logger = logging.getLogger(__name__)
 
 
 class RasaFileImporter(TrainingDataImporter):
-    """Default `TrainingFileImporter` implementation."""
+    """默认的 `TrainingFileImporter` 实现。
+    
+    从 Rasa 项目文件中导入训练数据，包括域、故事、
+    对话测试和 NLU 数据文件。
+    """
 
     def __init__(
         self,
@@ -26,7 +34,13 @@ class RasaFileImporter(TrainingDataImporter):
         domain_path: Optional[Text] = None,
         training_data_paths: Optional[Union[List[Text], Text]] = None,
     ):
-
+        """初始化 Rasa 文件导入器。
+        
+        Args:
+            config_file: 配置文件路径
+            domain_path: 域文件路径
+            training_data_paths: 训练数据路径列表或单个路径
+        """
         self._domain_path = domain_path
 
         self._nlu_files = rasa.shared.data.get_data_files(

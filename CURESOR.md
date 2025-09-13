@@ -1,0 +1,1 @@
+@shared/ @core/ @slot_mappings.py 详细阅读代码文件每一行代码，对代码做中文注解说明，将英文注解改为中文详细注解说明。最后将上述文件中实现的核心内容用markdown的格式输出到目录下 @readDocs/ @share/ @core/ 

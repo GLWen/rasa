@@ -25,108 +25,150 @@ from typing import (
     cast,
 )
 
+# =============================================================================
+# 对话状态跟踪器模块 - 维护对话状态和事件历史
+# =============================================================================
+# 此模块包含 DialogueStateTracker 类，用于跟踪对话状态、
+# 管理事件历史、处理槽位状态和循环管理。
+# 跟踪器是 Rasa 对话系统的核心组件，负责维护对话的完整状态。
+
+# =============================================================================
+# 导入相关常量和工具模块
+# =============================================================================
 import rasa.shared.utils.io
-from rasa.shared.constants import ASSISTANT_ID_KEY, DEFAULT_SENDER_ID
+from rasa.shared.constants import ASSISTANT_ID_KEY, DEFAULT_SENDER_ID  # 助手ID键和默认发送者ID
 from rasa.shared.nlu.constants import (
-    ENTITY_ATTRIBUTE_VALUE,
-    ENTITY_ATTRIBUTE_TYPE,
-    ENTITY_ATTRIBUTE_GROUP,
-    ENTITY_ATTRIBUTE_ROLE,
-    ACTION_TEXT,
-    ACTION_NAME,
-    ENTITIES,
-    METADATA_MODEL_ID,
+    ENTITY_ATTRIBUTE_VALUE,    # 实体值属性
+    ENTITY_ATTRIBUTE_TYPE,     # 实体类型属性
+    ENTITY_ATTRIBUTE_GROUP,    # 实体组属性
+    ENTITY_ATTRIBUTE_ROLE,     # 实体角色属性
+    ACTION_TEXT,               # 动作文本
+    ACTION_NAME,               # 动作名称
+    ENTITIES,                  # 实体
+    METADATA_MODEL_ID,         # 元数据模型ID
 )
-from rasa.shared.core import events
+from rasa.shared.core import events  # 事件模块
 from rasa.shared.core.constants import (
-    ACTION_LISTEN_NAME,
-    LOOP_NAME,
-    SHOULD_NOT_BE_SET,
-    PREVIOUS_ACTION,
-    ACTIVE_LOOP,
-    ACTION_SESSION_START_NAME,
-    FOLLOWUP_ACTION,
+    ACTION_LISTEN_NAME,        # 监听动作名称
+    LOOP_NAME,                 # 循环名称
+    SHOULD_NOT_BE_SET,         # 不应设置
+    PREVIOUS_ACTION,           # 前一动作
+    ACTIVE_LOOP,               # 活动循环
+    ACTION_SESSION_START_NAME, # 会话开始动作名称
+    FOLLOWUP_ACTION,           # 后续动作
 )
-from rasa.shared.core.conversation import Dialogue
+from rasa.shared.core.conversation import Dialogue  # 对话类
 from rasa.shared.core.events import (
-    UserUttered,
-    ActionExecuted,
-    Event,
-    Restarted,
-    ActionReverted,
-    UserUtteranceReverted,
-    BotUttered,
-    ActiveLoop,
-    SessionStarted,
-    ActionExecutionRejected,
-    DefinePrevUserUtteredFeaturization,
+    UserUttered,                              # 用户话语事件
+    ActionExecuted,                           # 动作执行事件
+    Event,                                    # 事件基类
+    Restarted,                                # 重启事件
+    ActionReverted,                           # 动作撤销事件
+    UserUtteranceReverted,                    # 用户话语撤销事件
+    BotUttered,                               # 机器人话语事件
+    ActiveLoop,                               # 活动循环事件
+    SessionStarted,                           # 会话开始事件
+    ActionExecutionRejected,                  # 动作执行拒绝事件
+    DefinePrevUserUtteredFeaturization,       # 定义前一用户话语特征化事件
 )
-from rasa.shared.core.domain import Domain, State
-from rasa.shared.core.slots import AnySlot, Slot
+from rasa.shared.core.domain import Domain, State  # 域和状态
+from rasa.shared.core.slots import AnySlot, Slot   # 槽位类
 
+# =============================================================================
+# 类型检查和数据结构定义
+# =============================================================================
 if TYPE_CHECKING:
-    from rasa.shared.core.events import NLUPredictionData
-    from rasa.shared.core.training_data.structures import Story
-    from rasa.shared.core.training_data.story_writer.story_writer import StoryWriter
+    from rasa.shared.core.events import NLUPredictionData  # NLU预测数据
+    from rasa.shared.core.training_data.structures import Story  # 故事结构
+    from rasa.shared.core.training_data.story_writer.story_writer import StoryWriter  # 故事写入器
 
-    EventTypeAlias = TypeVar("EventTypeAlias", bound=Event)
+    EventTypeAlias = TypeVar("EventTypeAlias", bound=Event)  # 事件类型别名
 
 
 @dataclasses.dataclass
 class TrackerActiveLoop:
-    """Dataclass for `DialogueStateTracker.active_loop`."""
+    """跟踪器活动循环的数据类。
+    
+    用于存储当前活动循环的状态信息。
+    """
 
-    name: Optional[Text]
-    is_interrupted: bool
-    rejected: bool
-    trigger_message: Optional[Dict]
+    name: Optional[Text]              # 循环名称
+    is_interrupted: bool              # 是否被中断
+    rejected: bool                    # 是否被拒绝
+    trigger_message: Optional[Dict]   # 触发消息
 
 
 logger = logging.getLogger(__name__)
 
-# same as State but with Dict[...] substituted with FrozenSet[Tuple[...]]
+# 与 State 相同，但将 Dict[...] 替换为 FrozenSet[Tuple[...]]
+# 用于创建可哈希的状态表示
 FrozenState = FrozenSet[Tuple[Text, FrozenSet[Tuple[Text, Tuple[Union[float, Text]]]]]]
 
 
+# =============================================================================
+# 事件详细程度枚举
+# =============================================================================
 class EventVerbosity(Enum):
-    """Filter on which events to include in tracker dumps."""
+    """过滤跟踪器转储中包含哪些事件的枚举。"""
 
-    # no events will be included
+    # 不包含任何事件
     NONE = 1
 
-    # all events, that contribute to the trackers state are included
-    # these are all you need to reconstruct the tracker state
+    # 包含所有对跟踪器状态有贡献的事件
+    # 这些是重建跟踪器状态所需的全部事件
     APPLIED = 2
 
-    # include even more events, in this case everything that comes
-    # after the most recent restart event. this will also include
-    # utterances that got reverted and actions that got undone.
+    # 包含更多事件，在这种情况下包括
+    # 最近重启事件之后的所有内容。这还包括
+    # 被撤销的话语和动作。
     AFTER_RESTART = 3
 
-    # include every logged event
+    # 包含每个记录的事件
     ALL = 4
 
 
+# =============================================================================
+# 任意槽位字典类
+# =============================================================================
 class AnySlotDict(dict):
-    """A slot dictionary that pretends every slot exists, by creating slots on demand.
+    """一个槽位字典，通过按需创建槽位来假装每个槽位都存在。
 
-    This only uses the generic slot type! This means certain functionality wont work,
-    e.g. properly featurizing the slot.
+    这只使用通用槽位类型！这意味着某些功能不会工作，
+    例如正确地对槽位进行特征化。
     """
 
     def __missing__(self, key: Text) -> Slot:
+        """当访问不存在的键时，创建一个新的 AnySlot。
+        
+        Args:
+            key: 槽位名称
+            
+        Returns:
+            新创建的 AnySlot 实例
+        """
         value = self[key] = AnySlot(key, mappings=[])
         return value
 
     def __contains__(self, key: Any) -> bool:
+        """总是返回 True，假装所有槽位都存在。
+        
+        Args:
+            key: 要检查的键
+            
+        Returns:
+            总是返回 True
+        """
         return True
 
 
+# =============================================================================
+# 对话状态跟踪器类
+# =============================================================================
 class DialogueStateTracker:
-    """Maintains the state of a conversation.
+    """维护对话的状态。
 
-    The field max_event_history will only give you these last events,
-    it can be set in the tracker_store.
+    max_event_history 字段只会给你这些最后的事件，
+    它可以在 tracker_store 中设置。
     """
 
     @classmethod
@@ -137,10 +179,19 @@ class DialogueStateTracker:
         slots: Optional[Iterable[Slot]] = None,
         max_event_history: Optional[int] = None,
     ) -> "DialogueStateTracker":
-        """Create a tracker from dump.
+        """从转储创建跟踪器。
 
-        The dump should be an array of dumped events. When restoring
-        the tracker, these events will be replayed to recreate the state.
+        转储应该是转储事件的数组。恢复跟踪器时，
+        这些事件将被重放以重新创建状态。
+        
+        Args:
+            sender_id: 发送者ID
+            events_as_dict: 事件字典列表
+            slots: 可选的槽位列表
+            max_event_history: 最大事件历史数量
+            
+        Returns:
+            创建的跟踪器实例
         """
         evts = events.deserialise_events(events_as_dict)
 
@@ -156,19 +207,18 @@ class DialogueStateTracker:
         sender_source: Optional[Text] = None,
         domain: Optional[Domain] = None,
     ) -> "DialogueStateTracker":
-        """Creates tracker from existing events.
+        """从现有事件创建跟踪器。
 
         Args:
-            sender_id: The ID of the conversation.
-            evts: Existing events which should be applied to the new tracker.
-            slots: Slots which can be set.
-            max_event_history: Maximum number of events which should be stored.
-            sender_source: File source of the messages.
-            domain: The current model domain.
+            sender_id: 对话的ID
+            evts: 应应用于新跟踪器的现有事件
+            slots: 可以设置的槽位
+            max_event_history: 应存储的最大事件数量
+            sender_source: 消息的文件源
+            domain: 当前模型域
 
         Returns:
-            Instantiated tracker with its state updated according to the given
-            events.
+            根据给定事件更新状态的实例化跟踪器
         """
         tracker = cls(sender_id, slots, max_event_history, sender_source)
 
@@ -185,45 +235,51 @@ class DialogueStateTracker:
         sender_source: Optional[Text] = None,
         is_rule_tracker: bool = False,
     ) -> None:
-        """Initialize the tracker.
+        """初始化跟踪器。
 
-        A set of events can be stored externally, and we will run through all
-        of them to get the current state. The tracker will represent all the
-        information we captured while processing messages of the dialogue.
+        一组事件可以外部存储，我们将遍历所有事件
+        来获取当前状态。跟踪器将表示我们在处理
+        对话消息时捕获的所有信息。
+        
+        Args:
+            sender_id: 发送者ID
+            slots: 可选的槽位列表
+            max_event_history: 最大事件历史数量
+            sender_source: 发送者源
+            is_rule_tracker: 是否为基于规则的跟踪器
         """
-        # maximum number of events to store
+        # 要存储的最大事件数量
         self._max_event_history = max_event_history
-        # list of previously seen events
+        # 之前看到的事件列表
         self.events = self._create_events([])
-        # id of the source of the messages
+        # 消息源的ID
         self.sender_id = sender_id
-        # slots that can be filled in this domain
+        # 在此域中可以填充的槽位
         if slots is not None:
             self.slots = {slot.name: copy.copy(slot) for slot in slots}
         else:
             self.slots = AnySlotDict()
-        # file source of the messages
+        # 消息的文件源
         self.sender_source = sender_source
-        # whether the tracker belongs to a rule-based data
+        # 跟踪器是否属于基于规则的数据
         self.is_rule_tracker = is_rule_tracker
 
         ###
-        # current state of the tracker - MUST be re-creatable by processing
-        # all the events. This only defines the attributes, values are set in
-        # `reset()`
+        # 跟踪器的当前状态 - 必须通过处理所有事件
+        # 来重新创建。这里只定义属性，值在 `reset()` 中设置
         ###
-        # if tracker is paused, no actions should be taken
+        # 如果跟踪器暂停，不应采取任何动作
         self._paused = False
-        # A deterministically scheduled action to be executed next
+        # 确定性地安排的下一个要执行的动作
         self.followup_action: Optional[Text] = ACTION_LISTEN_NAME
         self.latest_action: Optional[Dict[Text, Text]] = None
-        # Stores the most recent message sent by the user
+        # 存储用户发送的最新消息
         self.latest_message: Optional[UserUttered] = None
         self.latest_bot_utterance: Optional[BotUttered] = None
         self._reset()
         self.active_loop: Optional[TrackerActiveLoop] = None
 
-        # Optional model_id to add to all events.
+        # 添加到所有事件的可选 model_id
         self.model_id: Optional[Text] = None
         self.assistant_id: Optional[Text] = None
 
@@ -233,7 +289,14 @@ class DialogueStateTracker:
     def current_state(
         self, event_verbosity: EventVerbosity = EventVerbosity.NONE
     ) -> Dict[Text, Any]:
-        """Returns the current tracker state as an object."""
+        """返回当前跟踪器状态作为对象。
+        
+        Args:
+            event_verbosity: 事件详细程度
+            
+        Returns:
+            包含跟踪器状态的字典
+        """
         events = self._events_for_verbosity(event_verbosity)
         events_as_dict = [e.as_dict() for e in events] if events is not None else None
         latest_event_time = None
@@ -647,9 +710,17 @@ class DialogueStateTracker:
         return Dialogue(self.sender_id, list(self.events))
 
     def update(self, event: Event, domain: Optional[Domain] = None) -> None:
-        """Modify the state of the tracker according to an ``Event``."""
+        """根据 ``Event`` 修改跟踪器的状态。
+        
+        Args:
+            event: 要应用的事件
+            domain: 可选的域对象
+            
+        Raises:
+            ValueError: 当事件不是 Event 子类实例时
+        """
         if not isinstance(event, Event):  # pragma: no cover
-            raise ValueError("event to log must be an instance of a subclass of Event.")
+            raise ValueError("要记录的事件必须是 Event 子类的实例。")
 
         if self.model_id and METADATA_MODEL_ID not in event.metadata:
             event.metadata = {**event.metadata, METADATA_MODEL_ID: self.model_id}
@@ -782,7 +853,10 @@ class DialogueStateTracker:
     # with an event that in its ``apply_to`` method modifies the tracker.
     ###
     def _reset(self) -> None:
-        """Reset tracker to initial state - doesn't delete events though!."""
+        """重置跟踪器到初始状态 - 不过不会删除事件！
+        
+        重置所有状态变量到初始值，但保留事件历史。
+        """
         self._reset_slots()
         self._paused = False
         self.latest_action = {}
@@ -792,24 +866,43 @@ class DialogueStateTracker:
         self.active_loop = None
 
     def _reset_slots(self) -> None:
-        """Set all the slots to their initial value."""
+        """将所有槽位设置为其初始值。
+        
+        遍历所有槽位并调用其 reset() 方法。
+        """
         for slot in self.slots.values():
             slot.reset()
 
     def _set_slot(self, key: Text, value: Any) -> None:
-        """Sets the value of a slot if that slot exists."""
+        """如果槽位存在，则设置槽位的值。
+        
+        Args:
+            key: 槽位名称
+            value: 要设置的值
+        """
         if key in self.slots:
             slot = self.slots[key]
             slot.value = value
         else:
             logger.error(
-                f"Tried to set non existent slot '{key}'. Make sure you "
-                f"added all your slots to your domain file."
+                f"尝试设置不存在的槽位 '{key}'。请确保您 "
+                f"已将所有槽位添加到域文件中。"
             )
 
     def _create_events(self, evts: List[Event]) -> Deque[Event]:
+        """创建事件队列。
+        
+        Args:
+            evts: 事件列表
+            
+        Returns:
+            事件队列
+            
+        Raises:
+            ValueError: 当事件不是 Event 实例时
+        """
         if evts and not isinstance(evts[0], Event):  # pragma: no cover
-            raise ValueError("events, if given, must be a list of events")
+            raise ValueError("如果提供事件，必须是事件列表")
         return deque(evts, self._max_event_history)
 
     def __eq__(self, other: Any) -> bool:
@@ -880,34 +973,43 @@ class DialogueStateTracker:
         return rasa.shared.utils.io.get_dictionary_fingerprint(data)
 
 
+# =============================================================================
+# 跟踪器事件差异引擎
+# =============================================================================
 class TrackerEventDiffEngine:
-    """Computes event difference of two trackers."""
+    """计算两个跟踪器的事件差异。"""
 
     @staticmethod
     def event_difference(
         original: DialogueStateTracker, tracker: DialogueStateTracker
     ) -> List[Event]:
-        """Returns all events from the new tracker which are not present
-        in the original tracker.
+        """返回新跟踪器中不存在于原始跟踪器中的所有事件。
 
         Args:
-            tracker: Tracker containing events from the current conversation session.
+            original: 原始跟踪器
+            tracker: 包含当前对话会话事件的跟踪器
+            
+        Returns:
+            差异事件列表
         """
         offset = len(original.events) if original else 0
         events = tracker.events
         return list(itertools.islice(events, offset, len(events)))
 
 
+# =============================================================================
+# 辅助函数
+# =============================================================================
 def get_active_loop_name(
     state: State,
 ) -> Optional[Text]:
-    """Get the name of current active loop.
+    """获取当前活动循环的名称。
 
     Args:
-        state: The state from which the name of active loop should be extracted
+        state: 应从中提取活动循环名称的状态
 
     Return:
-        the name of active loop or None
+        活动循环的名称或 None
     """
     if (
         not state.get(ACTIVE_LOOP)
@@ -915,19 +1017,19 @@ def get_active_loop_name(
     ):
         return None
 
-    # FIXME: better type annotation for `State` would require
-    # a larger refactoring (e.g. switch to dataclass)
+    # FIXME: 更好的 `State` 类型注解需要
+    # 更大的重构（例如切换到 dataclass）
     return cast(Optional[Text], state[ACTIVE_LOOP].get(LOOP_NAME))
 
 
 def is_prev_action_listen_in_state(state: State) -> bool:
-    """Check if action_listen is the previous executed action.
+    """检查 action_listen 是否是前一个执行的动作。
 
     Args:
-        state: The state for which the check should be performed
+        state: 应执行检查的状态
 
     Return:
-        boolean value indicating whether action_listen is previous action
+        表示 action_listen 是否为前一动作的布尔值
     """
     prev_action_name = state.get(PREVIOUS_ACTION, {}).get(ACTION_NAME)
     return prev_action_name == ACTION_LISTEN_NAME
@@ -936,13 +1038,13 @@ def is_prev_action_listen_in_state(state: State) -> bool:
 def get_trackers_for_conversation_sessions(
     tracker: DialogueStateTracker,
 ) -> List[DialogueStateTracker]:
-    """Generate trackers for `tracker` that are split by conversation sessions.
+    """为按对话会话分割的 `tracker` 生成跟踪器。
 
     Args:
-        tracker: Instance of `DialogueStateTracker` to split.
+        tracker: 要分割的 `DialogueStateTracker` 实例
 
     Returns:
-        The trackers split by conversation sessions.
+        按对话会话分割的跟踪器列表
     """
     split_conversations = events.split_events(
         tracker.events,

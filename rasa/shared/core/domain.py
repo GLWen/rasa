@@ -25,71 +25,89 @@ from dataclasses import dataclass
 
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
+# =============================================================================
+# 域模块 - 定义机器人的对话域和配置
+# =============================================================================
+# 此模块包含 Domain 类，用于定义机器人的对话域，包括意图、实体、槽位、
+# 动作、响应、表单等核心组件。域是 Rasa 对话系统的核心配置，
+# 定义了机器人能够理解和执行的所有元素。
+
+# =============================================================================
+# 导入相关常量和工具模块
+# =============================================================================
 from rasa.shared.constants import (
-    DEFAULT_SESSION_EXPIRATION_TIME_IN_MINUTES,
-    DEFAULT_CARRY_OVER_SLOTS_TO_NEW_SESSION,
-    DOMAIN_SCHEMA_FILE,
-    DOCS_URL_DOMAINS,
-    DOCS_URL_FORMS,
-    LATEST_TRAINING_DATA_FORMAT_VERSION,
-    DOCS_URL_RESPONSES,
-    REQUIRED_SLOTS_KEY,
-    IGNORED_INTENTS,
-    RESPONSE_CONDITION,
+    DEFAULT_SESSION_EXPIRATION_TIME_IN_MINUTES,  # 默认会话过期时间（分钟）
+    DEFAULT_CARRY_OVER_SLOTS_TO_NEW_SESSION,      # 是否将槽位传递到新会话
+    DOMAIN_SCHEMA_FILE,                           # 域模式文件路径
+    DOCS_URL_DOMAINS,                             # 域文档URL
+    DOCS_URL_FORMS,                               # 表单文档URL
+    LATEST_TRAINING_DATA_FORMAT_VERSION,          # 最新训练数据格式版本
+    DOCS_URL_RESPONSES,                           # 响应文档URL
+    REQUIRED_SLOTS_KEY,                           # 必需槽位键
+    IGNORED_INTENTS,                              # 忽略的意图
+    RESPONSE_CONDITION,                           # 响应条件
 )
 import rasa.shared.core.constants
 from rasa.shared.core.constants import (
-    ACTION_SHOULD_SEND_DOMAIN,
-    SlotMappingType,
-    MAPPING_TYPE,
-    MAPPING_CONDITIONS,
-    ACTIVE_LOOP,
+    ACTION_SHOULD_SEND_DOMAIN,                    # 动作是否应发送域
+    SlotMappingType,                              # 槽位映射类型
+    MAPPING_TYPE,                                 # 映射类型
+    MAPPING_CONDITIONS,                           # 映射条件
+    ACTIVE_LOOP,                                  # 活动循环
 )
 from rasa.shared.exceptions import (
-    RasaException,
-    YamlException,
-    YamlSyntaxException,
+    RasaException,                                # Rasa基础异常
+    YamlException,                                # YAML异常
+    YamlSyntaxException,                          # YAML语法异常
 )
-import rasa.shared.utils.validation
-import rasa.shared.utils.io
-import rasa.shared.utils.common
-import rasa.shared.core.slot_mappings
-from rasa.shared.core.events import SlotSet, UserUttered
-from rasa.shared.core.slots import Slot, CategoricalSlot, TextSlot, AnySlot, ListSlot
-from rasa.shared.utils.validation import KEY_TRAINING_DATA_FORMAT_VERSION
+import rasa.shared.utils.validation               # 验证工具
+import rasa.shared.utils.io                       # IO工具
+import rasa.shared.utils.common                   # 通用工具
+import rasa.shared.core.slot_mappings             # 槽位映射
+from rasa.shared.core.events import SlotSet, UserUttered  # 事件类
+from rasa.shared.core.slots import Slot, CategoricalSlot, TextSlot, AnySlot, ListSlot  # 槽位类
+from rasa.shared.utils.validation import KEY_TRAINING_DATA_FORMAT_VERSION  # 训练数据格式版本键
 from rasa.shared.nlu.constants import (
-    ENTITY_ATTRIBUTE_TYPE,
-    ENTITY_ATTRIBUTE_ROLE,
-    ENTITY_ATTRIBUTE_GROUP,
-    RESPONSE_IDENTIFIER_DELIMITER,
-    INTENT_NAME_KEY,
-    ENTITIES,
+    ENTITY_ATTRIBUTE_TYPE,                        # 实体类型属性
+    ENTITY_ATTRIBUTE_ROLE,                        # 实体角色属性
+    ENTITY_ATTRIBUTE_GROUP,                       # 实体组属性
+    RESPONSE_IDENTIFIER_DELIMITER,                # 响应标识符分隔符
+    INTENT_NAME_KEY,                              # 意图名称键
+    ENTITIES,                                     # 实体
 )
 
 
+# =============================================================================
+# 类型检查和常量定义
+# =============================================================================
 if TYPE_CHECKING:
-    from rasa.shared.core.trackers import DialogueStateTracker
+    from rasa.shared.core.trackers import DialogueStateTracker  # 对话状态跟踪器
 
-CARRY_OVER_SLOTS_KEY = "carry_over_slots_to_new_session"
-SESSION_EXPIRATION_TIME_KEY = "session_expiration_time"
-SESSION_CONFIG_KEY = "session_config"
-USED_ENTITIES_KEY = "used_entities"
-USE_ENTITIES_KEY = "use_entities"
-IGNORE_ENTITIES_KEY = "ignore_entities"
-IS_RETRIEVAL_INTENT_KEY = "is_retrieval_intent"
-ENTITY_ROLES_KEY = "roles"
-ENTITY_GROUPS_KEY = "groups"
-ENTITY_FEATURIZATION_KEY = "influence_conversation"
+# 会话配置相关常量
+CARRY_OVER_SLOTS_KEY = "carry_over_slots_to_new_session"        # 槽位传递到新会话键
+SESSION_EXPIRATION_TIME_KEY = "session_expiration_time"          # 会话过期时间键
+SESSION_CONFIG_KEY = "session_config"                            # 会话配置键
 
-KEY_SLOTS = "slots"
-KEY_INTENTS = "intents"
-KEY_ENTITIES = "entities"
-KEY_RESPONSES = "responses"
-KEY_ACTIONS = "actions"
-KEY_FORMS = "forms"
-KEY_E2E_ACTIONS = "e2e_actions"
-KEY_RESPONSES_TEXT = "text"
+# 实体相关常量
+USED_ENTITIES_KEY = "used_entities"                              # 使用的实体键
+USE_ENTITIES_KEY = "use_entities"                                # 使用实体键
+IGNORE_ENTITIES_KEY = "ignore_entities"                          # 忽略实体键
+IS_RETRIEVAL_INTENT_KEY = "is_retrieval_intent"                  # 是否为检索意图键
+ENTITY_ROLES_KEY = "roles"                                       # 实体角色键
+ENTITY_GROUPS_KEY = "groups"                                     # 实体组键
+ENTITY_FEATURIZATION_KEY = "influence_conversation"              # 实体特征化键
 
+# 域键常量
+KEY_SLOTS = "slots"                                              # 槽位键
+KEY_INTENTS = "intents"                                          # 意图键
+KEY_ENTITIES = "entities"                                        # 实体键
+KEY_RESPONSES = "responses"                                      # 响应键
+KEY_ACTIONS = "actions"                                          # 动作键
+KEY_FORMS = "forms"                                              # 表单键
+KEY_E2E_ACTIONS = "e2e_actions"                                  # 端到端动作键
+KEY_RESPONSES_TEXT = "text"                                      # 响应文本键
+
+# 所有域键列表
 ALL_DOMAIN_KEYS = [
     KEY_SLOTS,
     KEY_FORMS,
@@ -101,81 +119,132 @@ ALL_DOMAIN_KEYS = [
     SESSION_CONFIG_KEY,
 ]
 
-PREV_PREFIX = "prev_"
+PREV_PREFIX = "prev_"                                           # 前缀常量
 
-# State is a dictionary with keys (USER, PREVIOUS_ACTION, SLOTS, ACTIVE_LOOP)
-# representing the origin of a SubState;
-# the values are SubStates, that contain the information needed for featurization
-SubStateValue = Union[Text, Tuple[Union[float, Text], ...]]
-SubState = MutableMapping[Text, SubStateValue]
-State = Dict[Text, SubState]
+# =============================================================================
+# 状态类型定义
+# =============================================================================
+# 状态是一个字典，键为 (USER, PREVIOUS_ACTION, SLOTS, ACTIVE_LOOP)
+# 表示子状态的来源；值为子状态，包含特征化所需的信息
+SubStateValue = Union[Text, Tuple[Union[float, Text], ...]]      # 子状态值类型
+SubState = MutableMapping[Text, SubStateValue]                   # 子状态类型
+State = Dict[Text, SubState]                                     # 状态类型
 
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# 异常类定义
+# =============================================================================
 class InvalidDomain(RasaException):
-    """Exception that can be raised when domain is not valid."""
+    """当域无效时可以抛出的异常。
+    
+    用于表示域配置中存在错误或无效设置的情况。
+    """
 
 
 class ActionNotFoundException(ValueError, RasaException):
-    """Raised when an action name could not be found."""
+    """当找不到动作名称时抛出的异常。
+    
+    当尝试访问域中不存在的动作时抛出此异常。
+    """
 
 
+# =============================================================================
+# 会话配置类
+# =============================================================================
 class SessionConfig(NamedTuple):
-    """The Session Configuration."""
+    """会话配置类。
+    
+    定义对话会话的配置参数，包括过期时间和槽位传递设置。
+    """
 
-    session_expiration_time: float  # in minutes
-    carry_over_slots: bool
+    session_expiration_time: float  # 会话过期时间（分钟）
+    carry_over_slots: bool          # 是否将槽位传递到新会话
 
     @staticmethod
     def default() -> "SessionConfig":
-        """Returns the SessionConfig with the default values."""
+        """返回具有默认值的 SessionConfig。
+        
+        Returns:
+            默认的会话配置对象
+        """
         return SessionConfig(
             DEFAULT_SESSION_EXPIRATION_TIME_IN_MINUTES,
             DEFAULT_CARRY_OVER_SLOTS_TO_NEW_SESSION,
         )
 
     def are_sessions_enabled(self) -> bool:
-        """Returns a boolean value depending on the value of session_expiration_time."""
+        """根据 session_expiration_time 的值返回布尔值。
+        
+        Returns:
+            如果会话过期时间大于0则返回True，否则返回False
+        """
         return self.session_expiration_time > 0
 
     def as_dict(self) -> Dict:
-        """Return serialized `SessionConfig`."""
+        """返回序列化的 `SessionConfig`。
+        
+        Returns:
+            会话配置的字典表示
+        """
         return {
             "session_expiration_time": self.session_expiration_time,
             "carry_over_slots_to_new_session": self.carry_over_slots,
         }
 
 
+# =============================================================================
+# 实体属性类
+# =============================================================================
 @dataclass
 class EntityProperties:
-    """Class for keeping track of the properties of entities in the domain."""
+    """用于跟踪域中实体属性的类。
+    
+    此类存储实体的各种属性信息，包括实体名称、角色、组和默认忽略的实体。
+    """
 
-    entities: List[Text]
-    roles: Dict[Text, List[Text]]
-    groups: Dict[Text, List[Text]]
-    default_ignored_entities: List[Text]
+    entities: List[Text]                    # 实体名称列表
+    roles: Dict[Text, List[Text]]           # 实体角色映射
+    groups: Dict[Text, List[Text]]          # 实体组映射
+    default_ignored_entities: List[Text]    # 默认忽略的实体列表
 
 
+# =============================================================================
+# 域类定义
+# =============================================================================
 class Domain:
-    """The domain specifies the universe in which the bot's policy acts.
+    """域类指定机器人策略运行的环境。
 
-    A Domain subclass provides the actions the bot can take, the intents
-    and entities it can recognise.
+    域子类提供机器人可以执行的动作、
+    可以识别的意图和实体。
     """
 
     @classmethod
     def empty(cls) -> "Domain":
-        """Returns empty Domain."""
+        """返回空域。
+        
+        Returns:
+            空的域对象
+        """
         return Domain.from_dict({})
 
     @classmethod
     def load(cls, paths: Union[List[Union[Path, Text]], Text, Path]) -> "Domain":
-        """Returns loaded Domain after merging all domain files."""
+        """合并所有域文件后返回加载的域。
+        
+        Args:
+            paths: 域文件路径或路径列表
+            
+        Returns:
+            合并后的域对象
+            
+        Raises:
+            InvalidDomain: 当未指定域文件时
+        """
         if not paths:
             raise InvalidDomain(
-                "No domain file was specified. Please specify a path "
-                "to a valid domain file."
+                "未指定域文件。请指定有效域文件的路径。"
             )
         elif not isinstance(paths, list) and not isinstance(paths, set):
             paths = [paths]
@@ -189,7 +258,17 @@ class Domain:
 
     @classmethod
     def from_path(cls, path: Union[Text, Path]) -> "Domain":
-        """Loads the `Domain` from a path."""
+        """从路径加载 `Domain`。
+        
+        Args:
+            path: 域文件或目录路径
+            
+        Returns:
+            加载的域对象
+            
+        Raises:
+            InvalidDomain: 当路径不存在时
+        """
         path = os.path.abspath(path)
 
         if os.path.isfile(path):
@@ -198,20 +277,37 @@ class Domain:
             domain = cls.from_directory(path)
         else:
             raise InvalidDomain(
-                "Failed to load domain specification from '{}'. "
-                "File not found!".format(os.path.abspath(path))
+                "从 '{}' 加载域规范失败。文件未找到！".format(os.path.abspath(path))
             )
 
         return domain
 
     @classmethod
     def from_file(cls, path: Text) -> "Domain":
-        """Loads the `Domain` from a YAML file."""
+        """从 YAML 文件加载 `Domain`。
+        
+        Args:
+            path: YAML 文件路径
+            
+        Returns:
+            加载的域对象
+        """
         return cls.from_yaml(rasa.shared.utils.io.read_file(path), path)
 
     @classmethod
     def from_yaml(cls, yaml: Text, original_filename: Text = "") -> "Domain":
-        """Loads the `Domain` from YAML text after validating it."""
+        """验证后从 YAML 文本加载 `Domain`。
+        
+        Args:
+            yaml: YAML 文本内容
+            original_filename: 原始文件名
+            
+        Returns:
+            加载的域对象
+            
+        Raises:
+            YamlException: 当 YAML 解析失败时
+        """
         try:
             rasa.shared.utils.validation.validate_yaml_schema(yaml, DOMAIN_SCHEMA_FILE)
 
@@ -227,36 +323,45 @@ class Domain:
 
     @classmethod
     def from_dict(cls, data: Dict) -> "Domain":
-        """Deserializes and creates domain.
+        """反序列化并创建域。
 
         Args:
-            data: The serialized domain.
+            data: 序列化的域数据
 
         Returns:
-            The instantiated `Domain` object.
+            实例化的 `Domain` 对象
         """
+        # 处理重复项警告
         duplicates = data.pop("duplicates", None)
         if duplicates:
             warn_about_duplicates_found_during_domain_merging(duplicates)
 
+        # 获取响应数据
         responses = data.get(KEY_RESPONSES, {})
 
+        # 处理槽位数据
         domain_slots = data.get(KEY_SLOTS, {})
         if domain_slots:
             rasa.shared.core.slot_mappings.validate_slot_mappings(domain_slots)
         slots = cls.collect_slots(domain_slots)
+        
+        # 处理动作数据
         domain_actions = data.get(KEY_ACTIONS, [])
         actions = cls._collect_action_names(domain_actions)
 
+        # 处理额外参数
         additional_arguments = {
             **data.get("config", {}),
             "actions_which_explicitly_need_domain": cls._collect_actions_which_explicitly_need_domain(  # noqa: E501
                 domain_actions
             ),
         }
+        
+        # 获取会话配置
         session_config = cls._get_session_config(data.get(SESSION_CONFIG_KEY, {}))
         intents = data.get(KEY_INTENTS, {})
 
+        # 验证表单数据
         forms = data.get(KEY_FORMS, {})
         _validate_forms(forms)
 
@@ -275,6 +380,14 @@ class Domain:
 
     @staticmethod
     def _get_session_config(session_config: Dict) -> SessionConfig:
+        """从字典获取会话配置。
+        
+        Args:
+            session_config: 会话配置字典
+            
+        Returns:
+            会话配置对象
+        """
         session_expiration_time_min = session_config.get(SESSION_EXPIRATION_TIME_KEY)
 
         if session_expiration_time_min is None:
@@ -288,13 +401,20 @@ class Domain:
 
     @classmethod
     def from_directory(cls, path: Text) -> "Domain":
-        """Loads and merges multiple domain files recursively from a directory tree."""
+        """从目录树递归加载并合并多个域文件。
+        
+        Args:
+            path: 目录路径
+            
+        Returns:
+            合并后的域对象
+        """
         combined: Dict[Text, Any] = {}
         for root, _, files in os.walk(path, followlinks=True):
             for file in files:
                 full_path = os.path.join(root, file)
                 if Domain.is_domain_file(full_path):
-                    _ = Domain.from_file(full_path)  # does the validation here only
+                    _ = Domain.from_file(full_path)  # 仅在此处进行验证
                     other_dict = rasa.shared.utils.io.read_yaml(
                         rasa.shared.utils.io.read_file(full_path)
                     )
@@ -308,15 +428,21 @@ class Domain:
         domain: Optional["Domain"],
         override: bool = False,
     ) -> "Domain":
-        """Merges this domain dict with another one, combining their attributes.
+        """将此域字典与另一个域合并，组合它们的属性。
 
-        This method merges domain dicts, and ensures all attributes (like ``intents``,
-        ``entities``, and ``actions``) are known to the Domain when the
-        object is created.
+        此方法合并域字典，并确保在创建对象时
+        域知道所有属性（如 ``intents``、``entities`` 和 ``actions``）。
 
-        List attributes like ``intents`` and ``actions`` are deduped
-        and merged. Single attributes are taken from `domain1` unless
-        override is `True`, in which case they are taken from `domain2`.
+        像 ``intents`` 和 ``actions`` 这样的列表属性会被去重和合并。
+        除非 override 为 `True`，否则单个属性从 `domain1` 获取，
+        在这种情况下从 `domain2` 获取。
+        
+        Args:
+            domain: 要合并的域对象
+            override: 是否覆盖当前域的值
+            
+        Returns:
+            合并后的域对象
         """
         if not domain or domain.is_empty():
             return self
@@ -336,18 +462,29 @@ class Domain:
         combined: Dict,
         override: bool = False,
     ) -> Dict:
-        """Combines two domain dictionaries."""
+        """合并两个域字典。
+        
+        Args:
+            domain_dict: 要合并的域字典
+            combined: 已合并的域字典
+            override: 是否覆盖现有值
+            
+        Returns:
+            合并后的域字典
+        """
         if not domain_dict:
             return combined
 
         if not combined:
             return domain_dict
 
+        # 处理配置覆盖
         if override:
             config = domain_dict.get("config", {})
             for key, val in config.items():
                 combined["config"][key] = val
 
+        # 处理会话配置
         if (
             override
             or combined.get(SESSION_CONFIG_KEY) == SessionConfig.default().as_dict()
@@ -358,13 +495,14 @@ class Domain:
         ]:
             combined[SESSION_CONFIG_KEY] = domain_dict[SESSION_CONFIG_KEY]
 
-        # remove existing forms from new actions
+        # 从新动作中移除现有表单
         for form in combined.get(KEY_FORMS, []):
             if form in domain_dict.get(KEY_ACTIONS, []):
                 domain_dict[KEY_ACTIONS].remove(form)
 
         duplicates: Dict[Text, List[Text]] = {}
 
+        # 定义合并函数映射
         merge_func_mappings: Dict[Text, Callable[..., Any]] = {
             KEY_INTENTS: rasa.shared.utils.common.merge_lists_of_dicts,
             KEY_ENTITIES: rasa.shared.utils.common.merge_lists_of_dicts,
@@ -375,6 +513,7 @@ class Domain:
             KEY_SLOTS: rasa.shared.utils.common.merge_dicts,
         }
 
+        # 合并各个键的值
         for key, merge_func in merge_func_mappings.items():
             duplicates[key] = rasa.shared.utils.common.extract_duplicates(
                 combined.get(key, []), domain_dict.get(key, [])
@@ -388,6 +527,7 @@ class Domain:
                 combined.get(key, default), domain_dict.get(key, default), override
             )
 
+        # 处理重复项
         if duplicates:
             duplicates = rasa.shared.utils.common.clean_duplicates(duplicates)
             combined.update({"duplicates": duplicates})
@@ -400,6 +540,16 @@ class Domain:
         store_entities_as_slots: bool,
         session_config: SessionConfig,
     ) -> Dict:
+        """预处理域字典。
+        
+        Args:
+            data: 域数据字典
+            store_entities_as_slots: 是否将实体存储为槽位
+            session_config: 会话配置
+            
+        Returns:
+            预处理后的域字典
+        """
         data = self._add_default_keys_to_domain_dict(
             data,
             store_entities_as_slots,
@@ -415,13 +565,26 @@ class Domain:
         store_entities_as_slots: bool,
         session_config: SessionConfig,
     ) -> Dict:
-        # add the config, session_config and training data version defaults
-        # if not included in the original domain dict
+        """向域字典添加默认键。
+        
+        如果原始域字典中未包含配置、会话配置和训练数据版本默认值，
+        则添加它们。
+        
+        Args:
+            data: 域数据字典
+            store_entities_as_slots: 是否将实体存储为槽位
+            session_config: 会话配置
+            
+        Returns:
+            添加默认键后的域字典
+        """
+        # 添加配置默认值
         if "config" not in data and not store_entities_as_slots:
             data.update(
                 {"config": {"store_entities_as_slots": store_entities_as_slots}}
             )
 
+        # 添加会话配置默认值
         if SESSION_CONFIG_KEY not in data:
             data.update(
                 {
@@ -434,6 +597,7 @@ class Domain:
                 }
             )
 
+        # 添加训练数据格式版本默认值
         if KEY_TRAINING_DATA_FORMAT_VERSION not in data:
             data.update(
                 {
@@ -447,6 +611,11 @@ class Domain:
 
     @staticmethod
     def _reset_intent_flags(intent: Dict[Text, Any]) -> None:
+        """重置意图标志。
+        
+        Args:
+            intent: 意图字典
+        """
         for intent_property in intent.values():
             if (
                 USE_ENTITIES_KEY in intent_property.keys()
@@ -461,6 +630,14 @@ class Domain:
 
     @staticmethod
     def _sanitize_intents_in_domain_dict(data: Dict[Text, Any]) -> Dict[Text, Any]:
+        """清理域字典中的意图。
+        
+        Args:
+            data: 域数据字典
+            
+        Returns:
+            清理后的域数据字典
+        """
         if not data.get(KEY_INTENTS):
             return data
 
@@ -476,11 +653,18 @@ class Domain:
 
     @staticmethod
     def collect_slots(slot_dict: Dict[Text, Any]) -> List[Slot]:
-        """Collects a list of slots from a dictionary."""
+        """从字典收集槽位列表。
+        
+        Args:
+            slot_dict: 槽位字典
+            
+        Returns:
+            槽位对象列表
+        """
         slots = []
-        # make a copy to not alter the input dictionary
+        # 复制字典以避免修改输入字典
         slot_dict = copy.deepcopy(slot_dict)
-        # Don't sort the slots, see https://github.com/RasaHQ/rasa-x/issues/3900
+        # 不对槽位排序，参见 https://github.com/RasaHQ/rasa-x/issues/3900
         for slot_name in slot_dict:
             slot_type = slot_dict[slot_name].pop("type", None)
             slot_class = Slot.resolve_by_type(slot_type)
@@ -591,7 +775,11 @@ class Domain:
 
     @rasa.shared.utils.common.lazy_property
     def retrieval_intents(self) -> List[Text]:
-        """List retrieval intents present in the domain."""
+        """列出域中存在的检索意图。
+        
+        Returns:
+            检索意图列表
+        """
         return [
             intent
             for intent in self.intent_properties
@@ -738,22 +926,21 @@ class Domain:
         session_config: SessionConfig = SessionConfig.default(),
         **kwargs: Any,
     ) -> None:
-        """Create a `Domain`.
+        """创建 `Domain` 对象。
 
         Args:
-            intents: Intent labels.
-            entities: The names of entities which might be present in user messages.
-            slots: Slots to store information during the conversation.
-            responses: Bot responses. If an action with the same name is executed, it
-                will send the matching response to the user.
-            action_names: Names of custom actions.
-            forms: Form names and their slot mappings.
-            data: original domain dict representation.
-            action_texts: End-to-End bot utterances from end-to-end stories.
-            store_entities_as_slots: If `True` Rasa will automatically create `SlotSet`
-                events for entities if there are slots with the same name as the entity.
-            session_config: Configuration for conversation sessions. Conversations are
-                restarted at the end of a session.
+            intents: 意图标签
+            entities: 用户消息中可能存在的实体名称
+            slots: 对话期间存储信息的槽位
+            responses: 机器人响应。如果执行同名动作，
+                它将向用户发送匹配的响应
+            action_names: 自定义动作名称
+            forms: 表单名称及其槽位映射
+            data: 原始域字典表示
+            action_texts: 端到端故事中的端到端机器人话语
+            store_entities_as_slots: 如果为 `True`，Rasa 将自动为实体创建 `SlotSet`
+                事件（如果有与实体同名的槽位）
+            session_config: 对话会话的配置。会话在会话结束时重新开始
         """
         self.entity_properties = self.collect_entity_properties(entities)
         self.intent_properties = self.collect_intent_properties(
@@ -1018,29 +1205,36 @@ class Domain:
         )
 
     def index_for_action(self, action_name: Text) -> int:
-        """Looks up which action index corresponds to this action name."""
+        """查找与此动作名称对应的动作索引。
+        
+        Args:
+            action_name: 动作名称
+            
+        Returns:
+            动作索引
+            
+        Raises:
+            ActionNotFoundException: 当动作不存在时
+        """
         try:
             return self.action_names_or_texts.index(action_name)
         except ValueError:
             self.raise_action_not_found_exception(action_name)
 
     def raise_action_not_found_exception(self, action_name_or_text: Text) -> NoReturn:
-        """Raises exception if action name or text not part of the domain or stories.
+        """如果动作名称或文本不是域或故事的一部分，则抛出异常。
 
         Args:
-            action_name_or_text: Name of an action or its text in case it's an
-                end-to-end bot utterance.
+            action_name_or_text: 动作名称或其文本（如果是端到端机器人话语）
 
         Raises:
-            ActionNotFoundException: If `action_name_or_text` are not part of this
-                domain.
+            ActionNotFoundException: 如果 `action_name_or_text` 不是此域的一部分
         """
         action_names = "\n".join([f"\t - {a}" for a in self.action_names_or_texts])
         raise ActionNotFoundException(
-            f"Cannot access action '{action_name_or_text}', "
-            f"as that name is not a registered "
-            f"action for this domain. "
-            f"Available actions are: \n{action_names}"
+            f"无法访问动作 '{action_name_or_text}'，"
+            f"因为该名称不是此域的注册动作。"
+            f"可用动作有：\n{action_names}"
         )
 
     # noinspection PyTypeChecker
@@ -1267,14 +1461,14 @@ class Domain:
     def get_active_state(
         self, tracker: "DialogueStateTracker", omit_unset_slots: bool = False
     ) -> State:
-        """Given a dialogue tracker, makes a representation of current dialogue state.
+        """给定对话跟踪器，生成当前对话状态的表示。
 
         Args:
-            tracker: dialog state tracker containing the dialog so far
-            omit_unset_slots: If `True` do not include the initial values of slots.
+            tracker: 包含到目前为止对话的对话状态跟踪器
+            omit_unset_slots: 如果为 `True`，则不包含槽位的初始值
 
         Returns:
-            A representation of the dialogue's current state.
+            对话当前状态的表示
         """
         state = {
             rasa.shared.core.constants.USER: self._get_user_sub_state(tracker),
@@ -1476,20 +1670,24 @@ class Domain:
             return True
 
     def as_dict(self) -> Dict[Text, Any]:
-        """Return serialized `Domain`."""
+        """返回序列化的 `Domain`。
+        
+        Returns:
+            域的字典表示
+        """
         return self._data
 
     @staticmethod
     def get_responses_with_multilines(
         responses: Dict[Text, List[Dict[Text, Any]]]
     ) -> Dict[Text, List[Dict[Text, Any]]]:
-        """Returns `responses` with preserved multilines in the `text` key.
+        """返回在 `text` 键中保留多行的 `responses`。
 
         Args:
-            responses: Original `responses`.
+            responses: 原始 `responses`
 
         Returns:
-            `responses` with preserved multilines in the `text` key.
+            在 `text` 键中保留多行的 `responses`
         """
         from ruamel.yaml.scalarstring import LiteralScalarString
 
@@ -1499,7 +1697,7 @@ class Domain:
                 response_text = example.get(KEY_RESPONSES_TEXT, "")
                 if not response_text or "\n" not in response_text:
                     continue
-                # Has new lines, use `LiteralScalarString`
+                # 有换行符，使用 `LiteralScalarString`
                 final_responses[utter_action][i][
                     KEY_RESPONSES_TEXT
                 ] = LiteralScalarString(response_text)
@@ -1520,21 +1718,24 @@ class Domain:
         }
 
     def persist(self, filename: Union[Text, Path]) -> None:
-        """Write domain to a file."""
+        """将域写入文件。
+        
+        Args:
+            filename: 输出文件路径
+        """
         as_yaml = self.as_yaml()
         rasa.shared.utils.io.write_text_file(as_yaml, filename)
 
     def as_yaml(self) -> Text:
-        """Dump the `Domain` object as a YAML string.
+        """将 `Domain` 对象转储为 YAML 字符串。
 
-        This function preserves the orders of the keys in the domain.
+        此函数保留域中键的顺序。
 
         Returns:
-            A string in YAML format representing the domain.
+            表示域的 YAML 格式字符串
         """
-        # setting the `version` key first so that it appears at the top of YAML files
-        # thanks to the `should_preserve_key_order` argument
-        # of `dump_obj_as_yaml_to_string`
+        # 首先设置 `version` 键，使其出现在 YAML 文件的顶部
+        # 感谢 `dump_obj_as_yaml_to_string` 的 `should_preserve_key_order` 参数
         domain_data: Dict[Text, Any] = {
             KEY_TRAINING_DATA_FORMAT_VERSION: DoubleQuotedScalarString(
                 LATEST_TRAINING_DATA_FORMAT_VERSION
@@ -1553,17 +1754,32 @@ class Domain:
         )
 
     def intent_config(self, intent_name: Text) -> Dict[Text, Any]:
-        """Return the configuration for an intent."""
+        """返回意图的配置。
+        
+        Args:
+            intent_name: 意图名称
+            
+        Returns:
+            意图配置字典
+        """
         return self.intent_properties.get(intent_name, {})
 
     @rasa.shared.utils.common.lazy_property
     def intents(self) -> List[Text]:
-        """Returns sorted list of intents."""
+        """返回排序的意图列表。
+        
+        Returns:
+            排序的意图名称列表
+        """
         return sorted(self.intent_properties.keys())
 
     @rasa.shared.utils.common.lazy_property
     def entities(self) -> List[Text]:
-        """Returns sorted list of entities."""
+        """返回排序的实体列表。
+        
+        Returns:
+            排序的实体名称列表
+        """
         return sorted(self.entity_properties.entities)
 
     @property
@@ -1791,22 +2007,25 @@ class Domain:
             )
 
     def is_empty(self) -> bool:
-        """Check whether the domain is empty."""
+        """检查域是否为空。
+        
+        Returns:
+            如果域为空则返回True，否则返回False
+        """
         return self.as_dict() == Domain.empty().as_dict()
 
     @staticmethod
     def is_domain_file(filename: Union[Text, Path]) -> bool:
-        """Checks whether the given file path is a Rasa domain file.
+        """检查给定文件路径是否为 Rasa 域文件。
 
         Args:
-            filename: Path of the file which should be checked.
+            filename: 要检查的文件路径
 
         Returns:
-            `True` if it's a domain file, otherwise `False`.
+            如果是域文件则返回 `True`，否则返回 `False`
 
         Raises:
-            YamlException: if the file seems to be a YAML file (extension) but
-                can not be read / parsed.
+            YamlException: 如果文件似乎是 YAML 文件（扩展名）但无法读取/解析
         """
         from rasa.shared.data import is_likely_yaml_file
 
@@ -1817,9 +2036,9 @@ class Domain:
             content = rasa.shared.utils.io.read_yaml_file(filename)
         except (RasaException, YamlSyntaxException):
             rasa.shared.utils.io.raise_warning(
-                message=f"The file {filename} could not be loaded as domain file. "
-                + "You can use https://yamlchecker.com/ to validate "
-                + "the YAML syntax of your file.",
+                message=f"文件 {filename} 无法作为域文件加载。"
+                + "您可以使用 https://yamlchecker.com/ 来验证 "
+                + "文件的 YAML 语法。",
                 category=UserWarning,
             )
             return False
@@ -1827,13 +2046,13 @@ class Domain:
         return any(key in content for key in ALL_DOMAIN_KEYS)
 
     def required_slots_for_form(self, form_name: Text) -> List[Text]:
-        """Retrieve the list of required slot names for a form defined in the domain.
+        """检索域中定义的表单的必需槽位名称列表。
 
         Args:
-            form_name: The name of the form.
+            form_name: 表单名称
 
         Returns:
-            The list of slot names or an empty list if no form was found.
+            槽位名称列表，如果未找到表单则返回空列表
         """
         form = self.forms.get(form_name)
         if form:
@@ -1842,12 +2061,11 @@ class Domain:
         return []
 
     def count_slot_mapping_statistics(self) -> Tuple[int, int, int]:
-        """Counts the total number of slot mappings and custom slot mappings.
+        """计算槽位映射和自定义槽位映射的总数。
 
         Returns:
-            A triple of integers where the first entry is the total number of mappings,
-            the second entry is the total number of custom mappings, and the third entry
-            is the total number of mappings which have conditions attached.
+            三个整数的元组，第一个是映射总数，
+            第二个是自定义映射总数，第三个是附加条件的映射总数
         """
         total_mappings = 0
         custom_mappings = 0
@@ -1865,19 +2083,22 @@ class Domain:
         return (total_mappings, custom_mappings, conditional_mappings)
 
     def does_custom_action_explicitly_need_domain(self, action_name: Text) -> bool:
-        """Assert if action has explicitly stated that it needs domain.
+        """断言动作是否明确声明需要域。
 
         Args:
-            action_name: Name of the action to be checked
+            action_name: 要检查的动作名称
 
         Returns:
-            True if action has explicitly stated that it needs domain.
-            Otherwise, it returns false.
+            如果动作明确声明需要域则返回True，否则返回False
         """
         return action_name in self._actions_which_explicitly_need_domain
 
     def __repr__(self) -> Text:
-        """Returns text representation of object."""
+        """返回对象的文本表示。
+        
+        Returns:
+            对象的字符串表示
+        """
         return (
             f"{self.__class__.__name__}: {len(self.action_names_or_texts)} actions, "
             f"{len(self.intent_properties)} intents, {len(self.responses)} responses, "
@@ -1920,10 +2141,17 @@ class Domain:
         return action_names
 
 
+# =============================================================================
+# 辅助函数
+# =============================================================================
 def warn_about_duplicates_found_during_domain_merging(
     duplicates: Dict[Text, List[Text]]
 ) -> None:
-    """Emits warning about found duplicates while loading multiple domain paths."""
+    """在加载多个域路径时发出关于找到重复项的警告。
+    
+    Args:
+        duplicates: 重复项字典
+    """
     message = ""
     for key in [
         KEY_INTENTS,
@@ -1941,8 +2169,7 @@ def warn_about_duplicates_found_during_domain_merging(
 
             duplicates_per_key_str = ", ".join(duplicates_per_key)
             message += (
-                f"The following duplicated {key} have been found "
-                f"across multiple domain files: {duplicates_per_key_str}"
+                f"在多个域文件中发现以下重复的 {key}：{duplicates_per_key_str}"
             )
 
     rasa.shared.utils.io.raise_warning(message, docs=DOCS_URL_DOMAINS)
@@ -1950,8 +2177,16 @@ def warn_about_duplicates_found_during_domain_merging(
 
 
 def _validate_forms(forms: Union[Dict, List]) -> None:
+    """验证表单数据。
+    
+    Args:
+        forms: 表单数据
+        
+    Raises:
+        InvalidDomain: 当表单数据无效时
+    """
     if not isinstance(forms, dict):
-        raise InvalidDomain("Forms have to be specified as dictionary.")
+        raise InvalidDomain("表单必须指定为字典。")
 
     for form_name, form_data in forms.items():
         if form_data is None:
@@ -1959,15 +2194,14 @@ def _validate_forms(forms: Union[Dict, List]) -> None:
 
         if not isinstance(form_data, Dict):
             raise InvalidDomain(
-                f"The contents of form '{form_name}' were specified "
-                f"as '{type(form_data)}'. They need to be specified "
-                f"as dictionary. Please see {DOCS_URL_FORMS} "
-                f"for more information."
+                f"表单 '{form_name}' 的内容被指定为 '{type(form_data)}'。"
+                f"它们需要指定为字典。请参阅 {DOCS_URL_FORMS} "
+                f"获取更多信息。"
             )
 
         if IGNORED_INTENTS in form_data and REQUIRED_SLOTS_KEY not in form_data:
             raise InvalidDomain(
-                f"If you use the `{IGNORED_INTENTS}` parameter in your form, then "
-                f"the keyword `{REQUIRED_SLOTS_KEY}` is required. "
-                f"Please see {DOCS_URL_FORMS} for more information."
+                f"如果您在表单中使用 `{IGNORED_INTENTS}` 参数，则 "
+                f"需要关键字 `{REQUIRED_SLOTS_KEY}`。"
+                f"请参阅 {DOCS_URL_FORMS} 获取更多信息。"
             )

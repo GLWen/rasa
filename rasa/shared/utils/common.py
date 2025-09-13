@@ -7,52 +7,68 @@ from typing import Text, Dict, Optional, Any, List, Callable, Collection, Type
 
 from rasa.shared.exceptions import RasaException
 
+# =============================================================================
+# 通用工具函数模块 - 提供 Rasa 框架中常用的工具函数
+# =============================================================================
+
 logger = logging.getLogger(__name__)
 
+
+# =============================================================================
+# 动态类加载和反射相关函数
+# =============================================================================
 
 def class_from_module_path(
     module_path: Text, lookup_path: Optional[Text] = None
 ) -> Type:
-    """Given the module name and path of a class, tries to retrieve the class.
+    """根据模块名称和类路径尝试检索类。
 
-    The loaded class can be used to instantiate new objects.
+    加载的类可用于实例化新对象。支持绝对路径和相对路径查找。
 
     Args:
-        module_path: either an absolute path to a Python class,
-                     or the name of the class in the local / global scope.
-        lookup_path: a path where to load the class from, if it cannot
-                     be found in the local / global scope.
+        module_path: Python 类的绝对路径，或在本地/全局作用域中的类名
+        lookup_path: 如果无法在本地/全局作用域中找到类，则从此路径加载类
 
     Returns:
-        a Python class
+        一个 Python 类
 
     Raises:
-        ImportError, in case the Python class cannot be found.
-        RasaException, in case the imported result is something other than a class
+        ImportError: 当无法找到 Python 类时
+        RasaException: 当导入的结果不是类时
     """
     klass = None
     if "." in module_path:
+        # 处理绝对路径，如 "rasa.core.policies.Policy"
         module_name, _, class_name = module_path.rpartition(".")
         m = importlib.import_module(module_name)
         klass = getattr(m, class_name, None)
     elif lookup_path:
-        # try to import the class from the lookup path
+        # 尝试从查找路径导入类
         m = importlib.import_module(lookup_path)
         klass = getattr(m, module_path, None)
 
     if klass is None:
-        raise ImportError(f"Cannot retrieve class from path {module_path}.")
+        raise ImportError(f"无法从路径 {module_path} 检索类。")
 
     if not inspect.isclass(klass):
         raise RasaException(
-            f"`class_from_module_path()` is expected to return a class, "
-            f"but for {module_path} we got a {type(klass)}."
+            f"`class_from_module_path()` 期望返回一个类，"
+            f"但对于 {module_path} 我们得到了 {type(klass)}。"
         )
     return klass
 
 
 def all_subclasses(cls: Any) -> List[Any]:
-    """Returns all known (imported) subclasses of a class."""
+    """返回类的所有已知（已导入）子类。
+    
+    递归查找所有子类，包括子类的子类。
+
+    Args:
+        cls: 要查找子类的基类
+
+    Returns:
+        所有非抽象子类的列表
+    """
     classes = cls.__subclasses__() + [
         g for s in cls.__subclasses__() for g in all_subclasses(s)
     ]
@@ -61,21 +77,44 @@ def all_subclasses(cls: Any) -> List[Any]:
 
 
 def module_path_from_instance(inst: Any) -> Text:
-    """Return the module path of an instance's class."""
+    """返回实例类的模块路径。
+    
+    Args:
+        inst: 要获取模块路径的实例
+
+    Returns:
+        格式为 "module.name.ClassName" 的模块路径
+    """
     return inst.__module__ + "." + inst.__class__.__name__
 
 
 def sort_list_of_dicts_by_first_key(dicts: List[Dict]) -> List[Dict]:
-    """Sorts a list of dictionaries by their first key."""
+    """按第一个键对字典列表进行排序。
+    
+    Args:
+        dicts: 要排序的字典列表
+
+    Returns:
+        按第一个键排序的字典列表
+    """
     return sorted(dicts, key=lambda d: list(d.keys())[0])
 
 
-def lazy_property(function: Callable) -> Any:
-    """Allows to avoid recomputing a property over and over.
+# =============================================================================
+# 装饰器和缓存相关函数
+# =============================================================================
 
-    The result gets stored in a local var. Computation of the property
-    will happen once, on the first call of the property. All
-    succeeding calls will use the value stored in the private property.
+def lazy_property(function: Callable) -> Any:
+    """允许避免重复计算属性。
+
+    结果存储在局部变量中。属性的计算将在第一次调用属性时发生一次。
+    所有后续调用将使用存储在私有属性中的值。
+
+    Args:
+        function: 要装饰的函数
+
+    Returns:
+        装饰后的属性对象
     """
     attr_name = "_lazy_" + function.__name__
 
@@ -88,21 +127,20 @@ def lazy_property(function: Callable) -> Any:
 
 
 def cached_method(f: Callable[..., Any]) -> Callable[..., Any]:
-    """Caches method calls based on the call's `args` and `kwargs`.
+    """基于调用的 `args` 和 `kwargs` 缓存方法调用。
 
-    Works for `async` and `sync` methods. Don't apply this to functions.
+    适用于 `async` 和 `sync` 方法。不要将此装饰器应用于函数。
 
     Args:
-        f: The decorated method whose return value should be cached.
+        f: 要缓存返回值的装饰方法
 
     Returns:
-        The return value which the method gives for the first call with the given
-        arguments.
+        方法在给定参数下第一次调用时给出的返回值
     """
-    assert "self" in arguments_of(f), "This decorator can only be used with methods."
+    assert "self" in arguments_of(f), "此装饰器只能用于方法。"
 
     class Cache:
-        """Helper class to abstract the caching details."""
+        """辅助类，用于抽象缓存细节。"""
 
         def __init__(self, caching_object: object, args: Any, kwargs: Any) -> None:
             self.caching_object = caching_object
@@ -124,20 +162,20 @@ def cached_method(f: Callable[..., Any]) -> Callable[..., Any]:
             return self.cache[self.cache_key]
 
     if asyncio.iscoroutinefunction(f):
-
+        # 处理异步方法
         @functools.wraps(f)
         async def decorated(self: object, *args: Any, **kwargs: Any) -> Any:
             cache = Cache(self, args, kwargs)
             if not cache.is_cached():
-                # Store the task immediately so that other concurrent calls of the
-                # method can re-use the same task and don't schedule a second execution.
+                # 立即存储任务，以便该方法的其他并发调用可以重用同一个任务
+                # 而不会安排第二次执行
                 to_cache = asyncio.ensure_future(f(self, *args, **kwargs))
                 cache.cache_result(to_cache)
             return await cache.cached_result()
 
         return decorated
     else:
-
+        # 处理同步方法
         @functools.wraps(f)
         def decorated(self: object, *args: Any, **kwargs: Any) -> Any:
             cache = Cache(self, args, kwargs)
@@ -149,30 +187,46 @@ def cached_method(f: Callable[..., Any]) -> Callable[..., Any]:
         return decorated
 
 
+# =============================================================================
+# 字符串和集合处理函数
+# =============================================================================
+
 def transform_collection_to_sentence(collection: Collection[Text]) -> Text:
-    """Transforms e.g. a list like ['A', 'B', 'C'] into a sentence 'A, B and C'."""
+    """将集合转换为句子格式。
+    
+    例如，将列表 ['A', 'B', 'C'] 转换为句子 'A, B and C'。
+
+    Args:
+        collection: 要转换的文本集合
+
+    Returns:
+        转换后的句子字符串
+    """
     x = list(collection)
     if len(x) >= 2:
         return ", ".join(map(str, x[:-1])) + " and " + x[-1]
     return "".join(collection)
 
 
+# =============================================================================
+# 函数参数处理函数
+# =============================================================================
+
 def minimal_kwargs(
     kwargs: Dict[Text, Any], func: Callable, excluded_keys: Optional[List] = None
 ) -> Dict[Text, Any]:
-    """Returns only the kwargs which are required by a function. Keys, contained in
-    the exception list, are not included.
+    """返回函数所需的 kwargs。
+    
+    只返回函数接受的参数，排除在异常列表中的键。
 
     Args:
-        kwargs: All available kwargs.
-        func: The function which should be called.
-        excluded_keys: Keys to exclude from the result.
+        kwargs: 所有可用的 kwargs
+        func: 要调用的函数
+        excluded_keys: 要从结果中排除的键
 
     Returns:
-        Subset of kwargs which are accepted by `func`.
-
+        被 `func` 接受的 kwargs 子集
     """
-
     excluded_keys = excluded_keys or []
 
     possible_arguments = arguments_of(func)
@@ -184,26 +238,52 @@ def minimal_kwargs(
     }
 
 
+# =============================================================================
+# 警告和日志相关函数
+# =============================================================================
+
 def mark_as_experimental_feature(feature_name: Text) -> None:
-    """Warns users that they are using an experimental feature."""
+    """警告用户他们正在使用实验性功能。"""
 
     logger.warning(
-        f"The {feature_name} is currently experimental and might change or be "
-        "removed in the future 🔬 Please share your feedback on it in the "
-        "forum (https://forum.rasa.com) to help us make this feature "
-        "ready for production."
+        f"{feature_name} 目前是实验性的，可能会在未来发生变化或被移除 🔬 "
+        "请在论坛 (https://forum.rasa.com) 分享您的反馈，"
+        "帮助我们使此功能准备好投入生产。"
     )
 
 
+# =============================================================================
+# 函数内省和参数处理函数
+# =============================================================================
+
 def arguments_of(func: Callable) -> List[Text]:
-    """Return the parameters of the function `func` as a list of names."""
+    """返回函数 `func` 的参数作为名称列表。
+    
+    Args:
+        func: 要检查参数的函数
+
+    Returns:
+        函数参数名称列表
+    """
     import inspect
 
     return list(inspect.signature(func).parameters.keys())
 
 
+# =============================================================================
+# 列表和字典处理函数
+# =============================================================================
+
 def extract_duplicates(list1: List[Any], list2: List[Any]) -> List[Any]:
-    """Extracts duplicates from two lists."""
+    """从两个列表中提取重复项。
+    
+    Args:
+        list1: 第一个列表
+        list2: 第二个列表
+
+    Returns:
+        两个列表中的重复项列表
+    """
     if list1:
         dict1 = {
             (sorted(list(i.keys()))[0] if isinstance(i, dict) else i): i for i in list1
@@ -225,7 +305,14 @@ def extract_duplicates(list1: List[Any], list2: List[Any]) -> List[Any]:
 
 
 def clean_duplicates(dupes: Dict[Text, Any]) -> Dict[Text, Any]:
-    """Removes keys for empty values."""
+    """移除空值的键。
+    
+    Args:
+        dupes: 要清理的字典
+
+    Returns:
+        清理后的字典
+    """
     duplicates = dupes.copy()
     for k in dupes:
         if not dupes[k]:
@@ -234,15 +321,27 @@ def clean_duplicates(dupes: Dict[Text, Any]) -> Dict[Text, Any]:
     return duplicates
 
 
+# =============================================================================
+# 数据合并函数
+# =============================================================================
+
 def merge_dicts(
     tempDict1: Dict[Text, Any],
     tempDict2: Dict[Text, Any],
     override_existing_values: bool = False,
 ) -> Dict[Text, Any]:
-    """Merges two dicts."""
+    """合并两个字典。
+    
+    Args:
+        tempDict1: 第一个字典
+        tempDict2: 第二个字典
+        override_existing_values: 是否覆盖现有值
+
+    Returns:
+        合并后的字典
+    """
     if override_existing_values:
         merged_dicts, b = tempDict1.copy(), tempDict2.copy()
-
     else:
         merged_dicts, b = tempDict2.copy(), tempDict1.copy()
     merged_dicts.update(b)
@@ -252,7 +351,16 @@ def merge_dicts(
 def merge_lists(
     list1: List[Any], list2: List[Any], override: bool = False
 ) -> List[Any]:
-    """Merges two lists."""
+    """合并两个列表。
+    
+    Args:
+        list1: 第一个列表
+        list2: 第二个列表
+        override: 是否覆盖（当前未使用）
+
+    Returns:
+        合并并去重后的排序列表
+    """
     return sorted(list(set(list1 + list2)))
 
 
@@ -261,7 +369,16 @@ def merge_lists_of_dicts(
     dict_list2: List[Dict],
     override_existing_values: bool = False,
 ) -> List[Dict]:
-    """Merges two dict lists."""
+    """合并两个字典列表。
+    
+    Args:
+        dict_list1: 第一个字典列表
+        dict_list2: 第二个字典列表
+        override_existing_values: 是否覆盖现有值
+
+    Returns:
+        合并后的字典列表
+    """
     dict1 = {
         (sorted(list(i.keys()))[0] if isinstance(i, dict) else i): i for i in dict_list1
     }

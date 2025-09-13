@@ -25,19 +25,21 @@ from rasa.shared.nlu.constants import (
 )
 from rasa.shared.constants import DIAGNOSTIC_DATA
 
+# =============================================================================
+# 消息模块 - 提供对话轮次的数据容器和特征管理功能
+# =============================================================================
+
 if typing.TYPE_CHECKING:
     from rasa.shared.nlu.training_data.features import Features
 
 
 class Message:
-    """Container for data that can be used to describe a conversation turn.
+    """用于描述对话轮次的数据容器。
 
-    The turn is described by a set of attributes such as e.g. `TEXT`  and  `INTENT`
-    when describing a user utterance or e.g. `ACTION_NAME` for describing a bot action.
-    The container includes raw information (`self.data`) as well as features
-    (`self.features`) for each such attribute.
-    Moreover, the message has a timestamp and can keep track about information
-    on a specific subset of attributes (`self.output_properties`).
+    轮次由一组属性描述，例如在描述用户话语时使用 `TEXT` 和 `INTENT`，
+    或在描述机器人动作时使用 `ACTION_NAME`。
+    容器包括原始信息（`self.data`）以及每个属性的特征（`self.features`）。
+    此外，消息具有时间戳，可以跟踪特定属性子集（`self.output_properties`）的信息。
     """
 
     def __init__(
@@ -48,7 +50,15 @@ class Message:
         features: Optional[List["Features"]] = None,
         **kwargs: Any,
     ) -> None:
-        """Creates an instance of Message."""
+        """创建消息实例。
+        
+        Args:
+            data: 消息数据字典
+            output_properties: 输出属性集合
+            time: 时间戳
+            features: 特征列表
+            **kwargs: 其他关键字参数
+        """
         self.time = time
         self.data = data.copy() if data else {}
         self.features = features if features else []
@@ -63,7 +73,11 @@ class Message:
         self.output_properties.add(TEXT)
 
     def add_features(self, features: Optional["Features"]) -> None:
-        """Add more vectorized features to the message."""
+        """向消息添加更多向量化特征。
+        
+        Args:
+            features: 要添加的特征对象
+        """
         if features is not None:
             self.features.append(features)
         self._cached_fingerprint = None
