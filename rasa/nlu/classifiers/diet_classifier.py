@@ -153,7 +153,7 @@ DIETClassifierT = TypeVar("DIETClassifierT", bound="DIETClassifier")
     is_trainable=True,  # 可训练组件
 )
 class DIETClassifier(GraphComponent, IntentClassifier, EntityExtractorMixin):
-    """用于意图分类和实体提取的多任务模型。
+    """TODO 用于意图分类和实体提取的多任务模型。
 
     DIET 是双意图和实体转换器（Dual Intent and Entity Transformer）。
     该架构基于一个转换器，该转换器在两个任务之间共享。
