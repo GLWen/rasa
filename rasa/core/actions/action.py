@@ -357,7 +357,7 @@ class ActionBotResponse(Action):
             "domain_responses": domain.responses,  # 领域响应
         }
 
-        # 生成消息
+        # TODO 生成消息
         message = await nlg.generate(
             self.utter_action,
             tracker,
