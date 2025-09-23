@@ -500,7 +500,7 @@ class CategoricalSlot(Slot):
                 f"不应在槽位定义中列为值。"
                 f" Rasa将忽略 '{self.name}' 槽位的 `null` 作为可能值。"
                 f" 请考虑在域文件中将此值更改为，例如 `unset`，"
-                f"或通过使用引号显式提供字符串值：`"null"`。",
+                f"或通过使用引号显式提供字符串值：`\"null\"`。",
                 category=UserWarning,
             )
         # 将值转换为小写字符串，过滤掉None值
